@@ -1,0 +1,23 @@
+# Placeholder reverse-proxy config -- not used by docker-compose (the frontend
+# and backend containers are reached directly on their own ports in local dev).
+# Copy to nginx.conf and adapt when a reverse proxy is introduced.
+
+events {}
+
+http {
+  server {
+    listen 80;
+
+    location /api/ {
+      proxy_pass http://backend:8000/api/;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location / {
+      proxy_pass http://frontend:3000/;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
+  }
+}
