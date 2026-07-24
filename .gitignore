@@ -29,6 +29,7 @@ frontend/node_modules/
 # Editors / OS
 .vscode/
 .idea/
+.claude/settings.local.json
 .DS_Store
 Thumbs.db
 
