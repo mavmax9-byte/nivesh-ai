@@ -11,6 +11,9 @@ import logging
 from nivesh.companies.repository import CompanyRepository, ExchangeRepository
 from nivesh.core.celery_app import celery_app
 from nivesh.core.db import AsyncSessionLocal
+from nivesh.financials.providers.factory import get_financial_data_provider
+from nivesh.financials.repository import FinancialStatementRepository
+from nivesh.financials.service import FinancialStatementService
 from nivesh.market_data.providers.factory import get_market_data_provider
 from nivesh.market_data.repository import CorporateActionRepository, HistoricalOHLCVRepository
 from nivesh.market_data.service import MarketDataService
@@ -93,3 +96,41 @@ def sync_company_market_data(self, symbol: str) -> dict:
     # actually produces a new version.
     refresh_company_dossier.delay(result["symbol"])
     return result
+
+
+async def _sync_company_financials(symbol: str) -> dict:
+    async with AsyncSessionLocal() as session:
+        service = FinancialStatementService(
+            provider=get_financial_data_provider(),
+            company_repository=CompanyRepository(session),
+            statement_repository=FinancialStatementRepository(session),
+            dossier_repository=ResearchDossierRepository(session),
+        )
+        result = await service.sync_company_financials(symbol)
+        return {
+            "company_id": str(result.company_id),
+            "symbol": result.symbol,
+            "statements_synced": result.statements_synced,
+            "statements_unchanged": result.statements_unchanged,
+        }
+
+
+@celery_app.task(
+    name="ingestion.sync_company_financials",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def sync_company_financials(self, symbol: str) -> dict:
+    """Rebuilds financial statement history for a company.
+
+    Deterministic and idempotent, mirroring sync_company_market_data:
+    unchanged periods are skipped rather than re-versioned (see
+    FinancialStatementService._is_unchanged), so re-running this on
+    already-current data is a cheap no-op.
+    """
+    try:
+        return asyncio.run(_sync_company_financials(symbol))
+    except Exception as exc:
+        logger.exception("sync_company_financials_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
