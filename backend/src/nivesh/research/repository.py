@@ -15,6 +15,7 @@ exactly the kind of broken history that requirement rules out.
 
 import uuid
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -120,7 +121,7 @@ class ResearchDossierRepository:
         company_id: uuid.UUID,
         sector: str | None,
         industry: str | None,
-        latest_price: float | None,
+        latest_price: Decimal | None,
         latest_trade_date: date | None,
         price_bar_count: int,
         price_history_start: date | None,

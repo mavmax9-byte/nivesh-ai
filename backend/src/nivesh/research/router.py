@@ -1,5 +1,7 @@
 """Research Dossier routes."""
 
+from typing import cast
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +14,7 @@ from nivesh.research.schemas import (
     ResearchEvidenceSummary,
     ResearchTimelineEventRead,
     ResearchVersionRead,
+    SourceType,
 )
 from nivesh.research.service import ResearchPipelineService
 
@@ -43,7 +46,10 @@ async def get_research_dossier(
             ResearchTimelineEventRead.model_validate(event) for event in overview.recent_timeline
         ],
         evidence_summary=[
-            ResearchEvidenceSummary(source_type=source_type, record_count=count)
+            # evidence_counts keys are always one of the SOURCE_TYPE_* constants
+            # (research/models.py) -- get_evidence_counts just can't say so at the
+            # type level since it groups by a plain string column.
+            ResearchEvidenceSummary(source_type=cast(SourceType, source_type), record_count=count)
             for source_type, count in overview.evidence_counts.items()
         ],
     )
