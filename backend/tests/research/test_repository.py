@@ -93,7 +93,11 @@ async def test_full_version_write_sequence_is_queryable(db_session):
     await repository.finalize_version(
         dossier=dossier,
         version_number=1,
-        watermark={"price_bar_count": 10, "latest_trade_date": "2026-01-15", "corporate_action_count": 0},
+        watermark={
+            "price_bar_count": 10,
+            "latest_trade_date": "2026-01-15",
+            "corporate_action_count": 0,
+        },
     )
 
     refreshed_dossier = await repository.get_by_company_id(company.id)
@@ -121,7 +125,7 @@ async def test_version_history_orders_newest_first_and_paginates(db_session):
     dossier = await repository.get_or_create_dossier(company.id)
 
     for version_number in range(1, 4):
-        version = await repository.create_version(
+        await repository.create_version(
             dossier_id=dossier.id,
             version_number=version_number,
             triggered_by=TRIGGERED_BY_MARKET_DATA_SYNC,

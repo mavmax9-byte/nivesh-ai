@@ -82,11 +82,11 @@ async def test_get_company_metadata_raises_symbol_not_found_when_no_name():
     mock_ticker = MagicMock()
     mock_ticker.info = {}
 
-    with patch(
-        "nivesh.market_data.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker
+    with (
+        patch("nivesh.market_data.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker),
+        pytest.raises(SymbolNotFoundError),
     ):
-        with pytest.raises(SymbolNotFoundError):
-            await provider.get_company_metadata("NOPE")
+        await provider.get_company_metadata("NOPE")
 
 
 @pytest.mark.asyncio
@@ -124,13 +124,11 @@ async def test_get_historical_ohlcv_raises_symbol_not_found_when_empty():
     mock_ticker = MagicMock()
     mock_ticker.history.return_value = pd.DataFrame()
 
-    with patch(
-        "nivesh.market_data.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker
+    with (
+        patch("nivesh.market_data.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker),
+        pytest.raises(SymbolNotFoundError),
     ):
-        with pytest.raises(SymbolNotFoundError):
-            await provider.get_historical_ohlcv(
-                "NOPE", start=date(2026, 1, 1), end=date(2026, 1, 6)
-            )
+        await provider.get_historical_ohlcv("NOPE", start=date(2026, 1, 1), end=date(2026, 1, 6))
 
 
 @pytest.mark.asyncio

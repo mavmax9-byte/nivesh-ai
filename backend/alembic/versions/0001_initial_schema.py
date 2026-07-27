@@ -25,9 +25,7 @@ def upgrade() -> None:
         sa.Column("code", sa.String(length=16), nullable=False),
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("country", sa.String(length=2), nullable=False, server_default="IN"),
-        sa.Column(
-            "timezone", sa.String(length=64), nullable=False, server_default="Asia/Kolkata"
-        ),
+        sa.Column("timezone", sa.String(length=64), nullable=False, server_default="Asia/Kolkata"),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),

@@ -123,7 +123,11 @@ async def test_refresh_dossier_creates_first_version_when_none_exists():
 @pytest.mark.asyncio
 async def test_refresh_dossier_is_a_no_op_when_nothing_changed():
     company = _company()
-    watermark = {"price_bar_count": 10, "latest_trade_date": "2026-01-15", "corporate_action_count": 0}
+    watermark = {
+        "price_bar_count": 10,
+        "latest_trade_date": "2026-01-15",
+        "corporate_action_count": 0,
+    }
     dossier = _dossier(company.id, version_number=1, watermark=watermark)
 
     service, dossier_repository = _make_service(
@@ -145,7 +149,11 @@ async def test_refresh_dossier_is_a_no_op_when_nothing_changed():
 @pytest.mark.asyncio
 async def test_refresh_dossier_creates_new_version_when_bars_increase():
     company = _company()
-    watermark = {"price_bar_count": 10, "latest_trade_date": "2026-01-15", "corporate_action_count": 0}
+    watermark = {
+        "price_bar_count": 10,
+        "latest_trade_date": "2026-01-15",
+        "corporate_action_count": 0,
+    }
     dossier = _dossier(company.id, version_number=1, watermark=watermark)
     version = ResearchVersion(id=uuid4(), dossier_id=dossier.id, version_number=2)
 

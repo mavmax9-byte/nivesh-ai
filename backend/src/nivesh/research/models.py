@@ -105,7 +105,9 @@ class ResearchVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     dossier: Mapped["CompanyResearchDossier"] = relationship(back_populates="versions")
-    snapshot: Mapped["ResearchSnapshot | None"] = relationship(back_populates="version", uselist=False)
+    snapshot: Mapped["ResearchSnapshot | None"] = relationship(
+        back_populates="version", uselist=False
+    )
 
 
 class ResearchSnapshot(Base):
@@ -119,7 +121,9 @@ class ResearchSnapshot(Base):
     __table_args__ = (UniqueConstraint("version_id", name="uq_research_snapshots_version_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("research_versions.id"), nullable=False)
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("research_versions.id"), nullable=False
+    )
     company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), nullable=False)
     sector: Mapped[str | None] = mapped_column(String(128), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -184,4 +188,6 @@ class ResearchSource(Base):
     range_start: Mapped[date | None] = mapped_column(Date, nullable=True)
     range_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     record_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

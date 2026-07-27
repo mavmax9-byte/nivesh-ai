@@ -115,7 +115,11 @@ async def test_sync_company_uses_default_five_year_window_when_not_specified():
     corporate_action_repository.bulk_upsert.return_value = 0
 
     service = MarketDataService(
-        provider, company_repository, exchange_repository, ohlcv_repository, corporate_action_repository
+        provider,
+        company_repository,
+        exchange_repository,
+        ohlcv_repository,
+        corporate_action_repository,
     )
 
     await service.sync_company("TCS")

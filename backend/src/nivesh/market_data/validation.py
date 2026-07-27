@@ -27,9 +27,7 @@ def validate_company_metadata(metadata: ProviderCompanyMetadata) -> None:
     if not metadata.symbol:
         raise InvalidMarketDataError("Company metadata is missing a symbol.")
     if not metadata.name or not metadata.name.strip():
-        raise InvalidMarketDataError(
-            f"Company metadata for '{metadata.symbol}' is missing a name."
-        )
+        raise InvalidMarketDataError(f"Company metadata for '{metadata.symbol}' is missing a name.")
     if not metadata.exchange_code:
         raise InvalidMarketDataError(
             f"Company metadata for '{metadata.symbol}' is missing an exchange."
@@ -51,6 +49,4 @@ def is_valid_ohlcv_bar(bar: ProviderOHLCVBar) -> bool:
         return False
     if bar.high < bar.open or bar.high < bar.close:
         return False
-    if bar.low > bar.open or bar.low > bar.close:
-        return False
-    return True
+    return not (bar.low > bar.open or bar.low > bar.close)

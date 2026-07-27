@@ -31,7 +31,9 @@ class HistoricalOHLCV(Base):
     close: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     volume: Mapped[int] = mapped_column(Integer, nullable=False)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
-    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class CorporateAction(Base):
@@ -50,4 +52,6 @@ class CorporateAction(Base):
     ratio_denominator: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dividend_amount_per_share: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

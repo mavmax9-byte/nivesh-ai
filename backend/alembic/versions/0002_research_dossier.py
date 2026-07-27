@@ -123,9 +123,7 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
-    op.create_index(
-        "ix_research_timeline_dossier_id", "research_timeline", ["dossier_id"]
-    )
+    op.create_index("ix_research_timeline_dossier_id", "research_timeline", ["dossier_id"])
 
     op.create_table(
         "research_sources",

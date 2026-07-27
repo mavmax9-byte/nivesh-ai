@@ -38,7 +38,9 @@ def _version(version_number: int = 1) -> ResearchVersion:
         dossier_id=uuid4(),
         version_number=version_number,
         triggered_by="market_data_sync",
-        change_summary="Initial research version: 10 price bar(s) through 2026-01-15, 0 corporate action(s).",
+        change_summary=(
+            "Initial research version: 10 price bar(s) through 2026-01-15, 0 corporate action(s)."
+        ),
     )
     version.created_at = datetime(2026, 1, 15, 18, 0, 0)
     version.snapshot = _snapshot()

@@ -176,7 +176,9 @@ class YFinanceProvider(MarketDataProvider):
             try:
                 actions_frame = yf.Ticker(yahoo_symbol).actions
             except Exception as exc:
-                raise ProviderError(f"Corporate actions fetch failed for '{symbol}': {exc}") from exc
+                raise ProviderError(
+                    f"Corporate actions fetch failed for '{symbol}': {exc}"
+                ) from exc
 
             if actions_frame is None or actions_frame.empty:
                 return []

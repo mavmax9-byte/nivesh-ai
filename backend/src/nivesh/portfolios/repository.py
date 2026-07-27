@@ -15,9 +15,7 @@ class PortfolioRepository:
 
     async def list_for_user(self, tenant_id: uuid.UUID, user_id: uuid.UUID) -> list[Portfolio]:
         result = await self._session.execute(
-            select(Portfolio).where(
-                Portfolio.tenant_id == tenant_id, Portfolio.user_id == user_id
-            )
+            select(Portfolio).where(Portfolio.tenant_id == tenant_id, Portfolio.user_id == user_id)
         )
         return list(result.scalars().all())
 
