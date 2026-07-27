@@ -7,7 +7,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 SourceType = Literal[
-    "market_data", "financial_data", "corporate_action", "news", "technical_indicator"
+    "market_data",
+    "financial_data",
+    "corporate_action",
+    "corporate_filing",
+    "news",
+    "technical_indicator",
 ]
 
 

@@ -52,6 +52,17 @@ def test_open_below_low_is_invalid():
     assert is_valid_ohlcv_bar(_bar(open=Decimal("50"))) is False
 
 
+def test_nan_price_is_invalid_rather_than_raising():
+    # Decimal("nan") is what provider-sourced NaN values round-trip to
+    # (see market_data/providers/yfinance_provider.py::_to_decimal); a
+    # NaN comparison via <= raises decimal.InvalidOperation instead of
+    # returning False, so it must be checked explicitly.
+    assert is_valid_ohlcv_bar(_bar(close=Decimal("nan"))) is False
+    assert is_valid_ohlcv_bar(_bar(open=Decimal("nan"))) is False
+    assert is_valid_ohlcv_bar(_bar(high=Decimal("nan"))) is False
+    assert is_valid_ohlcv_bar(_bar(low=Decimal("nan"))) is False
+
+
 def _metadata(**overrides) -> ProviderCompanyMetadata:
     defaults = dict(
         symbol="TCS",

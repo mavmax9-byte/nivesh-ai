@@ -41,6 +41,8 @@ def is_valid_ohlcv_bar(bar: ProviderOHLCVBar) -> bool:
     sync, so invalid bars are filtered out by the caller rather than
     raised on.
     """
+    if bar.open.is_nan() or bar.high.is_nan() or bar.low.is_nan() or bar.close.is_nan():
+        return False
     if bar.open <= 0 or bar.high <= 0 or bar.low <= 0 or bar.close <= 0:
         return False
     if bar.volume < 0:

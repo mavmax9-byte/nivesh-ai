@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from nivesh.companies import models as _companies_models  # noqa: F401
 from nivesh.config import get_settings
 from nivesh.core.db import Base
+from nivesh.corporate_filings import models as _corporate_filings_models  # noqa: F401
 from nivesh.financials import models as _financials_models  # noqa: F401
 from nivesh.main import create_app
 from nivesh.market_data import models as _market_data_models  # noqa: F401
