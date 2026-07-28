@@ -11,6 +11,7 @@ SourceType = Literal[
     "financial_data",
     "corporate_action",
     "corporate_filing",
+    "document_extraction",
     "news",
     "technical_indicator",
 ]

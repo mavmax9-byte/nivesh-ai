@@ -152,8 +152,9 @@ async def test_get_filings_by_category_returns_filtered_list():
 @pytest.mark.asyncio
 async def test_get_filing_history_returns_version_list():
     app = create_app()
+    version = _filing_version(version_number=2)
     mock_service = AsyncMock()
-    mock_service.get_filing_history.return_value = [_filing_version(version_number=2)]
+    mock_service.get_filing_history.return_value = [version]
     app.dependency_overrides[get_corporate_filings_service] = lambda: mock_service
 
     transport = ASGITransport(app=app)
@@ -164,6 +165,9 @@ async def test_get_filing_history_returns_version_list():
     body = response.json()
     assert len(body) == 1
     assert body[0]["version_number"] == 2
+    # id must be exposed so a client can discover a filing_version_id to
+    # call the Document Intelligence endpoints with (v0.4).
+    assert body[0]["id"] == str(version.id)
 
 
 @pytest.mark.asyncio

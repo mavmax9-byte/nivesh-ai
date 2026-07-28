@@ -16,6 +16,7 @@ an empty pool and opens fresh connections bound to itself.
 
 import asyncio
 import logging
+import uuid
 
 from nivesh.companies.repository import CompanyRepository, ExchangeRepository
 from nivesh.core.celery_app import celery_app
@@ -27,6 +28,13 @@ from nivesh.corporate_filings.repository import (
     FilingSourceRepository,
 )
 from nivesh.corporate_filings.service import CorporateFilingsService
+from nivesh.document_intelligence.providers.factory import get_document_extraction_provider
+from nivesh.document_intelligence.repository import DocumentExtractionRepository
+from nivesh.document_intelligence.service import DocumentIntelligenceService
+from nivesh.document_intelligence.validation import (
+    EXTRACTABLE_FILING_TYPES,
+    DuplicateExtractionError,
+)
 from nivesh.financials.providers.factory import get_financial_data_provider
 from nivesh.financials.repository import FinancialStatementRepository
 from nivesh.financials.service import FinancialStatementService
@@ -178,6 +186,10 @@ async def _sync_company_filings(symbol: str) -> dict:
                 "symbol": result.symbol,
                 "filings_synced": result.filings_synced,
                 "filings_unchanged": result.filings_unchanged,
+                "synced_filing_versions": [
+                    {"filing_version_id": str(v.filing_version_id), "filing_type": v.filing_type}
+                    for v in result.synced_filing_versions
+                ],
             }
     finally:
         await engine.dispose()
@@ -198,7 +210,68 @@ def sync_company_filings(self, symbol: str) -> dict:
     on already-current data is a cheap no-op.
     """
     try:
-        return asyncio.run(_sync_company_filings(symbol))
+        result = asyncio.run(_sync_company_filings(symbol))
     except Exception as exc:
         logger.exception("sync_company_filings_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+    # Document Intelligence is triggered only for filing versions this very
+    # sync just created (never for filings that already existed or were
+    # unchanged) and only for filing types it knows how to extract -- see
+    # CorporateFilingsService.sync_company_filings' synced_filing_versions.
+    for version in result["synced_filing_versions"]:
+        if version["filing_type"] in EXTRACTABLE_FILING_TYPES:
+            extract_filing_document.delay(version["filing_version_id"])
+
+    return result
+
+
+async def _extract_filing_document(filing_version_id: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            service = DocumentIntelligenceService(
+                provider=get_document_extraction_provider(),
+                filing_repository=CorporateFilingRepository(session),
+                company_repository=CompanyRepository(session),
+                extraction_repository=DocumentExtractionRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            extraction = await service.extract_filing_document(uuid.UUID(filing_version_id))
+            return {
+                "filing_version_id": str(extraction.filing_version_id),
+                "extraction_status": extraction.extraction_status,
+                "page_count": extraction.page_count,
+                "section_count": extraction.section_count,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.extract_filing_document",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def extract_filing_document(self, filing_version_id: str) -> dict:
+    """Extracts structured text for one filing version (Document Intelligence).
+
+    A filing version that already has an extraction raises
+    DuplicateExtractionError (see DocumentIntelligenceService); that is a
+    conflict, not a transient failure, so it is not retried. Provider/network
+    failures and any other error are retried, mirroring every other task in
+    this module.
+    """
+    try:
+        return asyncio.run(_extract_filing_document(filing_version_id))
+    except DuplicateExtractionError:
+        logger.info(
+            "extract_filing_document_already_extracted",
+            extra={"filing_version_id": filing_version_id},
+        )
+        raise
+    except Exception as exc:
+        logger.exception(
+            "extract_filing_document_failed", extra={"filing_version_id": filing_version_id}
+        )
         raise self.retry(exc=exc) from exc

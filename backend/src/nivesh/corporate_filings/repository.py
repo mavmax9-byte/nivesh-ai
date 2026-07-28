@@ -177,6 +177,19 @@ class CorporateFilingRepository:
         )
         return list(result.scalars().all())
 
+    async def get_version_by_id(self, filing_version_id: uuid.UUID) -> FilingVersion | None:
+        """Looks up one FilingVersion by id, with its parent filing eager
+        loaded -- used by Document Intelligence to resolve the filing_type
+        of the document identity it is asked to extract (FilingVersion
+        itself carries source_url/filing_date/checksum, but not
+        filing_type, which lives on the parent CorporateFiling)."""
+        result = await self._session.execute(
+            select(FilingVersion)
+            .options(selectinload(FilingVersion.filing))
+            .where(FilingVersion.id == filing_version_id)
+        )
+        return result.scalar_one_or_none()
+
     # -- writes (flush only, except commit_filing) ----------------------
 
     async def create_filing(self, data: dict) -> CorporateFiling:

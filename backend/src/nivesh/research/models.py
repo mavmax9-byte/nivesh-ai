@@ -51,14 +51,15 @@ TRIGGERED_BY_MANUAL = "manual"
 EVENT_TYPE_VERSION_CREATED = "version_created"
 
 # Valid values for ResearchSource.source_type. "market_data",
-# "corporate_action", "financial_data", and "corporate_filing" are
-# populated by their respective sprints' pipelines -- "news" and
-# "technical_indicator" exist now so later sprints (which add those data
-# sources) extend this catalog, not the schema.
+# "corporate_action", "financial_data", "corporate_filing", and
+# "document_extraction" are populated by their respective sprints'
+# pipelines -- "news" and "technical_indicator" exist now so later sprints
+# (which add those data sources) extend this catalog, not the schema.
 SOURCE_TYPE_MARKET_DATA = "market_data"
 SOURCE_TYPE_FINANCIAL_DATA = "financial_data"
 SOURCE_TYPE_CORPORATE_ACTION = "corporate_action"
 SOURCE_TYPE_CORPORATE_FILING = "corporate_filing"
+SOURCE_TYPE_DOCUMENT_EXTRACTION = "document_extraction"
 SOURCE_TYPE_NEWS = "news"
 SOURCE_TYPE_TECHNICAL_INDICATOR = "technical_indicator"
 

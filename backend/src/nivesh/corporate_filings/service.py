@@ -56,11 +56,23 @@ EVENT_TYPE_FILINGS_SYNCED = "filings_synced"
 
 
 @dataclass(frozen=True)
+class SyncedFilingVersion:
+    """Identity + filing_type of one filing version created by a sync --
+    lets callers (the ingestion task layer) decide which newly synced
+    filings to hand to Document Intelligence, without this service knowing
+    anything about extraction."""
+
+    filing_version_id: uuid.UUID
+    filing_type: str
+
+
+@dataclass(frozen=True)
 class FilingSyncResult:
     company_id: uuid.UUID
     symbol: str
     filings_synced: int
     filings_unchanged: int
+    synced_filing_versions: tuple[SyncedFilingVersion, ...]
 
 
 class CorporateFilingsService:
@@ -91,12 +103,20 @@ class CorporateFilingsService:
         )
 
         synced: list[CorporateFiling] = []
+        synced_filing_versions: list[SyncedFilingVersion] = []
         unchanged = 0
 
         for provider_filing in provider_filings:
-            filing, was_new = await self._persist_filing(company.id, source.id, provider_filing)
-            if was_new:
+            filing, filing_version, was_new = await self._persist_filing(
+                company.id, source.id, provider_filing
+            )
+            if was_new and filing_version is not None:
                 synced.append(filing)
+                synced_filing_versions.append(
+                    SyncedFilingVersion(
+                        filing_version_id=filing_version.id, filing_type=filing.filing_type
+                    )
+                )
             else:
                 unchanged += 1
 
@@ -107,6 +127,7 @@ class CorporateFilingsService:
             symbol=company.symbol,
             filings_synced=len(synced),
             filings_unchanged=unchanged,
+            synced_filing_versions=tuple(synced_filing_versions),
         )
 
     async def get_filings(
@@ -155,7 +176,7 @@ class CorporateFilingsService:
 
     async def _persist_filing(
         self, company_id: uuid.UUID, source_id: uuid.UUID, provider_filing: ProviderFiling
-    ) -> tuple[CorporateFiling, bool]:
+    ) -> tuple[CorporateFiling, FilingVersion | None, bool]:
         validate_filing_type(provider_filing.filing_type)
         validate_reporting_period(
             filing_type=provider_filing.filing_type,
@@ -180,7 +201,7 @@ class CorporateFilingsService:
             company_id, provider_filing.filing_type, provider_filing.reporting_period
         )
         if existing is not None and is_duplicate_filing(existing.checksum, filing_data["checksum"]):
-            return existing, False
+            return existing, None, False
 
         checksum_owner = await self._filings.get_by_checksum(filing_data["checksum"])
         if checksum_owner is not None and (existing is None or checksum_owner.id != existing.id):
@@ -206,10 +227,10 @@ class CorporateFilingsService:
             version_number=next_version,
             filing_data=filing_data,
         )
-        await self._filings.create_filing_version(version_data)
+        filing_version = await self._filings.create_filing_version(version_data)
 
         filing = await self._filings.commit_filing(filing)
-        return filing, True
+        return filing, filing_version, True
 
     async def _link_to_research_dossier(
         self, company_id: uuid.UUID, symbol: str, synced_filings: list[CorporateFiling]

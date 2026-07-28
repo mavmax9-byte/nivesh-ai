@@ -44,6 +44,7 @@ class CorporateFilingRead(BaseModel):
 class FilingVersionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    id: uuid.UUID
     version_number: int
     title: str
     filing_date: date
