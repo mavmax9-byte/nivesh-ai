@@ -41,6 +41,9 @@ from nivesh.financials.service import FinancialStatementService
 from nivesh.market_data.providers.factory import get_market_data_provider
 from nivesh.market_data.repository import CorporateActionRepository, HistoricalOHLCVRepository
 from nivesh.market_data.service import MarketDataService
+from nivesh.news_intelligence.providers.factory import get_news_provider
+from nivesh.news_intelligence.repository import NewsArticleRepository
+from nivesh.news_intelligence.service import NewsIntelligenceService
 from nivesh.research.repository import ResearchDossierRepository
 from nivesh.research.service import ResearchPipelineService
 
@@ -274,4 +277,48 @@ def extract_filing_document(self, filing_version_id: str) -> dict:
         logger.exception(
             "extract_filing_document_failed", extra={"filing_version_id": filing_version_id}
         )
+        raise self.retry(exc=exc) from exc
+
+
+async def _sync_company_news(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            service = NewsIntelligenceService(
+                provider=get_news_provider(),
+                company_repository=CompanyRepository(session),
+                article_repository=NewsArticleRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            result = await service.sync_company_news(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "articles_synced": result.articles_synced,
+                "articles_unchanged": result.articles_unchanged,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.sync_company_news",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def sync_company_news(self, symbol: str) -> dict:
+    """Rebuilds recent news article history for a company.
+
+    Deterministic and idempotent, mirroring sync_company_financials:
+    articles already stored (per checksum) are skipped rather than
+    duplicated (see NewsIntelligenceService._persist_article), so
+    re-running this on already-current data is a cheap no-op. Does not
+    auto-chain into any further task -- there is no downstream module that
+    consumes news articles yet, the same position sync_company_financials
+    is in today.
+    """
+    try:
+        return asyncio.run(_sync_company_news(symbol))
+    except Exception as exc:
+        logger.exception("sync_company_news_failed", extra={"symbol": symbol})
         raise self.retry(exc=exc) from exc

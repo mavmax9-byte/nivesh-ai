@@ -10,6 +10,7 @@ from nivesh.corporate_filings.router import router as corporate_filings_router
 from nivesh.document_intelligence.router import router as document_intelligence_router
 from nivesh.financials.router import router as financials_router
 from nivesh.market_data.router import router as market_data_router
+from nivesh.news_intelligence.router import router as news_intelligence_router
 from nivesh.portfolios.router import router as portfolios_router
 from nivesh.research.router import router as research_router
 
@@ -22,6 +23,7 @@ api_v1_router.include_router(market_data_router)
 api_v1_router.include_router(financials_router)
 api_v1_router.include_router(corporate_filings_router)
 api_v1_router.include_router(document_intelligence_router)
+api_v1_router.include_router(news_intelligence_router)
 api_v1_router.include_router(portfolios_router)
 api_v1_router.include_router(research_router)
 api_v1_router.include_router(ai_agents_router)

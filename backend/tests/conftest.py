@@ -17,6 +17,7 @@ from nivesh.document_intelligence import models as _document_intelligence_models
 from nivesh.financials import models as _financials_models  # noqa: F401
 from nivesh.main import create_app
 from nivesh.market_data import models as _market_data_models  # noqa: F401
+from nivesh.news_intelligence import models as _news_intelligence_models  # noqa: F401
 from nivesh.portfolios import models as _portfolios_models  # noqa: F401
 from nivesh.research import models as _research_models  # noqa: F401
 
