@@ -20,6 +20,7 @@ from nivesh.market_data import models as _market_data_models  # noqa: F401
 from nivesh.news_intelligence import models as _news_intelligence_models  # noqa: F401
 from nivesh.portfolios import models as _portfolios_models  # noqa: F401
 from nivesh.research import models as _research_models  # noqa: F401
+from nivesh.technical_intelligence import models as _technical_intelligence_models  # noqa: F401
 
 
 @pytest_asyncio.fixture

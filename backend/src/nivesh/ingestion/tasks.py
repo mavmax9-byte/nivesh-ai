@@ -46,6 +46,9 @@ from nivesh.news_intelligence.repository import NewsArticleRepository
 from nivesh.news_intelligence.service import NewsIntelligenceService
 from nivesh.research.repository import ResearchDossierRepository
 from nivesh.research.service import ResearchPipelineService
+from nivesh.technical_intelligence.providers.factory import get_technical_data_provider
+from nivesh.technical_intelligence.repository import TechnicalIndicatorRepository
+from nivesh.technical_intelligence.service import TechnicalIntelligenceService
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +129,11 @@ def sync_company_market_data(self, symbol: str) -> dict:
 
     # Every successful sync triggers a dossier refresh; refresh_dossier's own
     # watermark check (not this call site) is what decides whether that
-    # actually produces a new version.
+    # actually produces a new version. It also triggers technical indicator
+    # generation, since indicators are computed from the OHLCV bars this
+    # sync just wrote -- see technical_intelligence/service.py.
     refresh_company_dossier.delay(result["symbol"])
+    generate_technical_indicators.delay(result["symbol"])
     return result
 
 
@@ -321,4 +327,51 @@ def sync_company_news(self, symbol: str) -> dict:
         return asyncio.run(_sync_company_news(symbol))
     except Exception as exc:
         logger.exception("sync_company_news_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_technical_indicators(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            ohlcv_repository = HistoricalOHLCVRepository(session)
+            service = TechnicalIntelligenceService(
+                provider=get_technical_data_provider(ohlcv_repository),
+                company_repository=CompanyRepository(session),
+                indicator_repository=TechnicalIndicatorRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            result = await service.generate_indicators(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "indicators_generated": result.indicators_generated,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_technical_indicators",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def generate_technical_indicators(self, symbol: str) -> dict:
+    """Recomputes technical indicators for a company over a bounded
+    trailing window of recent OHLCV history (see
+    technical_intelligence/service.py for why bounded, not full history).
+
+    Deterministic and idempotent: every value is a pure recomputation
+    upserted by (company_id, trading_date, indicator_name), so re-running
+    this is always safe and simply overwrites with the same result if
+    nothing has changed. A company with fewer than the minimum required
+    price bars raises InsufficientHistoryError, which -- like every other
+    validation failure in this codebase -- is retried rather than treated
+    as a permanent conflict; see PROJECT_CONTEXT.md's Celery section for
+    why that imperfect-but-consistent behavior is kept.
+    """
+    try:
+        return asyncio.run(_generate_technical_indicators(symbol))
+    except Exception as exc:
+        logger.exception("generate_technical_indicators_failed", extra={"symbol": symbol})
         raise self.retry(exc=exc) from exc

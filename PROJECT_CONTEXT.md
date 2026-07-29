@@ -5,7 +5,7 @@ conversation (or a new human engineer) should be able to read this file and
 continue development with zero loss of context. Written as an onboarding
 document for a Senior Staff Engineer joining the project.
 
-Last updated: after v0.5 (News Intelligence Engine).
+Last updated: after v0.6 (Technical Intelligence Engine).
 
 ---
 
@@ -54,7 +54,7 @@ Next.js (frontend, :3000)  →  FastAPI (backend, :8000, /api/v1)  →  PostgreS
   provider (Clerk/Auth.js per the external architecture docs) and is not
   implemented.
 - No AI/LLM/embeddings/vector DB/knowledge graph anywhere in the currently
-  built modules (v0.1–v0.5). All ingestion, normalization, validation, and
+  built modules (v0.1–v0.6). All ingestion, normalization, validation, and
   categorization is deterministic (fixed lookup tables, regex/string
   heuristics, arithmetic). The `ai_agents` module is a fully-stubbed
   placeholder reserved for this later (see §12).
@@ -104,6 +104,7 @@ nivesh-ai/
 │   │   ├── corporate_filings/   # v0.3(b): Corporate Filings Metadata Engine
 │   │   ├── document_intelligence/ # v0.4: Document Intelligence Engine
 │   │   ├── news_intelligence/   # v0.5: News Intelligence Engine
+│   │   ├── technical_intelligence/ # v0.6: Technical Intelligence Engine
 │   │   ├── ai_agents/           # Investment Committee -- fully stubbed, no logic
 │   │   └── ingestion/tasks.py   # every Celery task, one shared file
 │   └── tests/                   # mirrors src/ 1:1 by domain, plus conftest.py
@@ -116,8 +117,8 @@ nivesh-ai/
 ```
 
 Every domain module that ingests external data (`market_data`, `financials`,
-`corporate_filings`, `document_intelligence`, `news_intelligence`) has the
-**identical internal shape**:
+`corporate_filings`, `document_intelligence`, `news_intelligence`,
+`technical_intelligence`) has the **identical internal shape**:
 
 ```
 <module>/
@@ -152,7 +153,7 @@ each time (CI does the same).
 
 ## 4. Database Schema Summary
 
-Single Postgres database, single `Base`. Alembic migrations `0001`–`0006`,
+Single Postgres database, single `Base`. Alembic migrations `0001`–`0007`,
 applied in order, no branches:
 
 | Migration | Tables |
@@ -163,6 +164,7 @@ applied in order, no branches:
 | `0004_corporate_filings` | `filing_categories`, `filing_sources`, `corporate_filings`, `filing_versions` |
 | `0005_document_intelligence` | `document_extractions`, `document_sections` |
 | `0006_news_intelligence` | `news_articles` |
+| `0007_technical_intelligence` | `technical_indicators` |
 
 Key cross-module foreign keys (always plain FK columns, **never** an ORM
 `relationship()` reaching into another module — see §13):
@@ -186,6 +188,7 @@ document_extractions.filing_version_id -> filing_versions.id  (UNIQUE)
 document_extractions.company_id  -> companies.id   (denormalized)
 document_sections.document_extraction_id -> document_extractions.id
 news_articles.company_id         -> companies.id
+technical_indicators.company_id  -> companies.id
 ```
 
 ### Two distinct versioning patterns (see §13 — never mix these up)
@@ -217,6 +220,18 @@ news_articles.company_id         -> companies.id
    a no-op" convention in §7) rather than rejected as a conflict. Know
    which of these two behaviors is appropriate before copying either
    pattern into a new module.
+4. **Upsert-recomputed, not versioned at all** (`technical_intelligence`'s
+   `TechnicalIndicator`): unlike every pattern above, a row here is not an
+   immutable fact about something that happened -- it is a *pure function*
+   of OHLCV history, so recomputing it is expected to happen repeatedly and
+   should simply overwrite the same identity every time
+   (`ON CONFLICT DO UPDATE` on `(company_id, trading_date, indicator_name)`,
+   the same upsert idiom `market_data`'s own `bulk_upsert` uses -- there is
+   no "old value was wrong, new value corrects it" narrative to preserve).
+   `TechnicalIndicator` is also this codebase's first entity-attribute-value
+   table (one row per company + date + indicator name, rather than one row
+   per date with a column per indicator) specifically so new indicators can
+   be added as pure data (`INDICATOR_*` constants), never a migration.
 
 ### Reference/lookup tables
 
@@ -260,7 +275,7 @@ hoc by application code.
   connects to a **real** Postgres (`TEST_DATABASE_URL`), creates all tables,
   runs the test, drops all tables. It **skips cleanly** (does not fail) if
   Postgres is unreachable, so the rest of the suite stays runnable without
-  a DB. As of v0.5: **313 tests**, all passing with a live Postgres, Ruff
+  a DB. As of v0.6: **364 tests**, all passing with a live Postgres, Ruff
   and mypy both clean across the whole `src/` tree.
 
 ---
@@ -361,7 +376,10 @@ hoc by application code.
   class is chosen. Swapping providers later (a real NSE/BSE feed, a
   commercial data vendor, an OCR-capable extractor) means writing a new
   class + changing one line in `factory.py` — nothing above the provider
-  boundary should ever need to change.
+  boundary should ever need to change. **One deliberate exception:**
+  `technical_intelligence`'s `get_technical_data_provider(ohlcv_repository)`
+  takes an argument (an already-open `HistoricalOHLCVRepository`), unlike
+  every other factory's zero-arg signature — see below for why.
 - `providers/exceptions.py`: a `<X>ProviderError(NiveshError)` (502) and
   usually a `<X>NotFoundError(<X>ProviderError)` (404) subclass, following
   the exact same two-class shape in every module.
@@ -390,6 +408,20 @@ hoc by application code.
     v0.4 verification — likely anti-bot behavior on NSE's side, not a bug
     in this codebase); the Celery retry mechanism handles this the same
     way it handles any other transient provider failure.
+  - `technical_intelligence`'s provider is unlike every other one in this
+    codebase: its concrete implementation (`PersistedOHLCVProvider`) does
+    not call an external API at all — it reads OHLCV bars `market_data`'s
+    own sync has *already persisted* to `historical_ohlcv`, via
+    `HistoricalOHLCVRepository`. This directly satisfies the v0.6
+    instruction to "reuse the existing Market Data provider... rather than
+    creating duplicate market-data fetching logic" — reuse means reusing
+    the *data* `market_data`'s provider already fetched, not re-fetching
+    it. Because the concrete provider needs a database session,
+    `providers/factory.py`'s `get_technical_data_provider` takes the
+    caller's already-open `HistoricalOHLCVRepository` as an argument,
+    unlike every other factory's zero-arg signature — a deliberate,
+    documented, narrow exception, not a precedent to casually extend to
+    providers that genuinely call external APIs.
 
 ---
 
@@ -447,12 +479,16 @@ def do_the_work(self, arg: str) -> dict:
   `sync_company_market_data` → (always) `refresh_company_dossier`;
   `sync_company_filings` → (only for filing versions the sync *just
   created*, and only for extractable filing types) `extract_filing_document`
-  per version. `sync_company_financials` and `sync_company_news` do **not**
+  per version; `sync_company_market_data` → (always, alongside
+  `refresh_company_dossier`) `generate_technical_indicators` — added v0.6,
+  since indicators are computed from the OHLCV bars a market data sync just
+  wrote. `sync_company_financials` and `sync_company_news` do **not**
   currently auto-chain into anything -- there is no downstream module that
   consumes financials or news yet.
 - Current task inventory (`ingestion.*`): `refresh_company_dossier`,
   `sync_company_market_data`, `sync_company_financials`,
-  `sync_company_filings`, `extract_filing_document`, `sync_company_news`.
+  `sync_company_filings`, `extract_filing_document`, `sync_company_news`,
+  `generate_technical_indicators`.
 - Local dev worker command (Windows, since `--pool=prefork` doesn't work
   natively there): `celery -A nivesh.core.celery_app worker --loglevel=info
   --pool=solo --without-mingle --without-gossip --without-heartbeat` — the
@@ -466,8 +502,8 @@ def do_the_work(self, arg: str) -> dict:
 ## 10. Research Dossier Integration
 
 `research/models.py` is the intentional cross-domain seam every other
-module plugs into, and it has been extended **three times** now (v0.3,
-v0.4, v0.5) using the identical recipe, with **zero changes** to
+module plugs into, and it has been extended **four times** now (v0.3,
+v0.4, v0.5, v0.6) using the identical recipe, with **zero changes** to
 `ResearchPipelineService`'s or `ResearchDossierRepository`'s existing write
 logic any time:
 
@@ -478,16 +514,30 @@ SOURCE_TYPE_CORPORATE_ACTION = "corporate_action"
 SOURCE_TYPE_CORPORATE_FILING = "corporate_filing"     # added v0.3
 SOURCE_TYPE_DOCUMENT_EXTRACTION = "document_extraction"  # added v0.4
 SOURCE_TYPE_NEWS = "news"                             # populated v0.5
-SOURCE_TYPE_TECHNICAL_INDICATOR = "technical_indicator"  # reserved, unused
+SOURCE_TYPE_TECHNICAL_INDICATOR = "technical_indicator"  # populated v0.6
 ```
 
-`SOURCE_TYPE_NEWS` had already existed as a reserved-but-unused constant
-since Sprint 3 (see the module's own "extend the catalog, not the schema"
-docstring, written in anticipation of exactly this) -- v0.5 is the first
-version to actually populate it, which meant **zero changes** to
-`research/models.py` or `research/schemas.py` were needed at all, only a
-plain `from nivesh.research.models import SOURCE_TYPE_NEWS` in
-`news_intelligence/service.py`.
+`SOURCE_TYPE_NEWS` and `SOURCE_TYPE_TECHNICAL_INDICATOR` had both already
+existed as reserved-but-unused constants since Sprint 3 (see the module's
+own "extend the catalog, not the schema" docstring, written in
+anticipation of exactly this) -- v0.5 and v0.6 were simply the first
+versions to actually populate each one, meaning **zero changes** to
+`research/models.py` or `research/schemas.py` were needed either time,
+only a plain `from nivesh.research.models import SOURCE_TYPE_X` import in
+each module's `service.py`.
+
+`ResearchSource`'s own docstring (research/models.py) also already
+specified, since Sprint 3, *how* `technical_indicator` evidence should be
+linked once something finally populated it: "High-volume, continuous
+evidence (market_data, technical_indicator) is referenced as an aggregate
+date range with a record count" — unlike the one-row-per-item linking
+`corporate_filings`/`document_intelligence`/`news_intelligence` use.
+`technical_intelligence/service.py`'s `_link_to_research_dossier` follows
+that pre-existing guidance exactly: one aggregate `ResearchSource` row per
+generation run (`range_start`/`range_end` spanning the computed dates,
+`record_count` = total indicator values written, `reference_id=None`), not
+one row per indicator value — this was decided by precedent already in the
+codebase, not invented fresh for v0.6.
 
 The module's own docstring: new sources should **"extend this catalog, not
 the schema."** The `SourceType` `Literal` in `research/schemas.py` must be
@@ -525,7 +575,7 @@ evidence to whatever version already exists, or skip if none does yet.
 
 ---
 
-## 11. Completed Versions (v0.1 – v0.5)
+## 11. Completed Versions (v0.1 – v0.6)
 
 | Version | Delivered | Key modules/tables |
 |---|---|---|
@@ -536,27 +586,31 @@ evidence to whatever version already exists, or skip if none does yet.
 | **v0.4 — Document Intelligence Engine** | Deterministic text extraction from filing documents (PDF via `pypdf`, HTML via `bs4`+`lxml` — see §8 for why both), heading/section detection via string heuristics (numbering, ALL CAPS, Title Case — never AI), stored as flat text + structured sections in Postgres. Keyed 1:1 off the immutable `FilingVersion` identity. Auto-triggered off newly-synced filings. During build/review, **3 gaps were found and fixed before release**: (1) the provider was PDF-only despite the real dev-provider data being HTML — added format detection; (2) the API router disambiguated symbol-vs-UUID by runtime type-sniffing on one shared route, inconsistent with every other router's literal-path-segment convention — split into two explicit routes; (3) `FilingVersionRead` didn't expose `id`, making the new endpoints undiscoverable via the API — added it. | `document_extractions`, `document_sections` |
 | **v0.5 — News Intelligence Engine** | Per-company news article catalog, ingested via a yfinance-backed dev provider (`Ticker.news`, real publications like Reuters/Bloomberg/Verdict). No versioning (a news article is immutable once published — same "no versioning needed" precedent as `document_intelligence`, see §4); dedup and idempotent re-sync via a `checksum` unique constraint. **Deduplication is scoped per-provider only by explicit user decision** during v0.5 planning: `checksum = sha256(company_id \| provider \| canonicalized_url)`, so the same URL from two different providers is stored as two separate articles rather than merged — true cross-provider identity resolution (recognizing the same real-world story reported under different URLs) is deferred to a future version once a second real provider exists to design that logic against real data. `category` is assigned via a small fixed keyword → category lookup applied to the title (`earnings`/`corporate_action`/`regulatory`/`markets`/`general`) — a deterministic string-heuristic classification, the same "not AI" spirit as `document_intelligence`'s heading detection, not a learned or LLM-based classifier. `SOURCE_TYPE_NEWS` had been reserved-but-unused in `research/models.py` since Sprint 3 specifically for this — v0.5 required **zero changes** to `research/models.py` or `research/schemas.py`. One real bug found during E2E verification: the local Windows dev Postgres cluster used for prior sessions' verification had been `initdb`'d with `WIN1252` server encoding (inherited from the OS locale) instead of UTF8, so it rejected real news text containing non-Latin1 Unicode (smart quotes, zero-width joiners) with `UntranslatableCharacterError`. Confirmed this is a **local sandbox artifact, not an application bug** (the project's `docker-compose.yml` Postgres image, `postgres:16-alpine`, defaults to UTF8) by recreating a UTF8-encoded database in the same cluster and re-verifying successfully — no application code changed for this. | `news_articles` |
 
-**Test count as of v0.5: 313 passing** (`pytest`, real Postgres). Ruff and
+| **v0.6 — Technical Intelligence Engine** | Deterministic technical indicators (16 series: SMA 20/50/100/200, EMA 20/50, RSI-14, MACD/Signal/Histogram, Bollinger Bands 20-2, ATR-14, OBV, Volume SMA-20) computed via pandas `rolling()`/`ewm()` from OHLCV bars `market_data` already persisted — no new external fetch (see §8's provider-pattern entry). `TechnicalIndicator` is this codebase's first entity-attribute-value table and its first upsert-only (never versioned) entity (see §4 point 4). **Recompute scope is a bounded trailing window** (300 bars), not full company history — an explicit user decision during v0.6 planning, made to keep generation cost independent of how long a company has been tracked; see §14 for the OBV carry-forward mechanism this required. Auto-triggered after every `sync_company_market_data` run. | `technical_indicators` |
+
+**Test count as of v0.6: 364 passing** (`pytest`, real Postgres). Ruff and
 mypy both clean across the whole `src/` tree.
 
 Commits (chronological, all on `main`):
 `6d5e038` init → `9c8ff36` gitignore → `f616f25` Sprint 4 → `fe5a0e4` ruff
 fixes → `d308b17` mypy fixes → `53b1e66` feat(v0.3) corporate filings →
-`d3f691c` feat(v0.4) document intelligence → (v0.5 news intelligence, see
-git log for the current hash).
+`d3f691c` feat(v0.4) document intelligence → `ae47f82` feat(v0.5) news
+intelligence → (v0.6 technical intelligence, see git log for the current
+hash).
 
 ---
 
-## 12. Current Roadmap (v0.6 onwards)
+## 12. Current Roadmap (v0.7 onwards)
 
-Nothing beyond v0.5 has been scoped or approved yet. Do not start
-implementing v0.6 without an explicit spec from the user — this project's
+Nothing beyond v0.6 has been scoped or approved yet. Do not start
+implementing v0.7 without an explicit spec from the user — this project's
 working pattern has consistently been: architecture review first (no code)
 → user confirms scope → implement → self-review → verify → commit/push.
 
-**What v0.4 and v0.5 were explicitly building toward**: document
-extractions and news articles exist so a *future* version can consume
-them. Natural, foreshadowed next steps, roughly in dependency order:
+**What v0.4, v0.5, and v0.6 were explicitly building toward**: document
+extractions, news articles, and technical indicators exist so a *future*
+version can consume them. Natural, foreshadowed next steps, roughly in
+dependency order:
 
 1. **A real filings-discovery provider** for `corporate_filings` (NSE/BSE
    announcements API or a commercial vendor) that supplies genuine
@@ -578,9 +632,11 @@ them. Natural, foreshadowed next steps, roughly in dependency order:
    Graph" concepts — none of which exist in this codebase yet. Building
    this is a materially different kind of work (the first version to
    actually use AI) and should not be started casually. News sentiment
-   analysis / AI summarization of articles belongs here, not in
-   `news_intelligence` — explicitly out of scope for v0.5 per the user's
-   instructions.
+   analysis / AI summarization of articles, and any trading
+   strategy/signal/forecasting logic built on top of
+   `technical_intelligence`'s indicator values, both belong here, not in
+   `news_intelligence` or `technical_intelligence` themselves — explicitly
+   out of scope for those versions per the user's instructions both times.
 4. **Real authentication** (`core/security.py` is an explicit,
    documented placeholder — swap for Clerk/Auth.js or similar).
 5. **Portfolio analytics** (`portfolios/service.py`'s docstring: "Portfolio
@@ -602,9 +658,12 @@ deliberate conversation with the user first)
    LLM calls, no embeddings, no vector database, no semantic search, no
    sentiment analysis, no knowledge graph anywhere outside `ai_agents`.
    This has been a hard constraint on every version so far, restated
-   explicitly by the user for both v0.4 and v0.5 (v0.5's restatement
+   explicitly by the user for v0.4, v0.5, and v0.6 (v0.5's restatement
    specifically named AI summarization, sentiment analysis, and semantic
-   search as excluded from `news_intelligence`).
+   search as excluded from `news_intelligence`; v0.6's specifically named
+   trading strategies, buy/sell signals, forecasting, and ML models as
+   excluded from `technical_intelligence` -- that module computes and
+   stores indicator values only, no interpretation of them).
 2. **One shared `Base`, one Postgres database.** Never introduce a second
    declarative base or a second database/schema without explicit sign-off.
 3. **The provider/factory/DTO abstraction is not optional.** Business
@@ -712,6 +771,32 @@ deliberate conversation with the user first)
   `CREATE DATABASE ... TEMPLATE template0 ENCODING 'UTF8'` (or just use
   `docker compose up -d postgres` instead) rather than treating it as a
   code defect.
+- **`technical_intelligence` recomputes over a bounded 300-bar trailing
+  window, not a company's full price history** — an explicit v0.6 decision
+  (over recomputing every indicator across full history on every run),
+  made to keep the cost of a single generation run independent of how long
+  a company has been tracked. `LOOKBACK_BARS = 300` in
+  `technical_intelligence/service.py` is comfortably more than the longest
+  window any indicator here needs (SMA-200), leaving generous margin for
+  the standard seeding convention used by recursively defined indicators
+  (EMA, RSI, MACD, ATR). One consequence: `OBV` (a running cumulative
+  total from inception, not a fixed-window calculation) cannot be
+  correctly derived from the window alone, so it is carried forward
+  explicitly from the last already-persisted value each run (see
+  `normalization.py`'s `compute_obv` and its module docstring) rather than
+  re-derived — this makes OBV numerically exact across runs *as long as
+  generation runs frequently relative to the window size* (true today,
+  since it auto-triggers on every market data sync). If a company ever
+  goes more than ~300 trading days between generation runs, OBV's
+  carry-forward would miss the gap's contribution and silently re-anchor
+  from the window's start — an accepted, documented edge case given how
+  the window size and auto-trigger cadence are chosen, not a bug to "fix"
+  without first reconsidering `LOOKBACK_BARS`.
+- **`technical_intelligence`'s `providers/factory.py` deviates from the
+  established zero-argument factory signature** every other module uses
+  (`get_technical_data_provider(ohlcv_repository)` takes an argument) —
+  see §8's technical_intelligence entry for why this is a deliberate,
+  narrow exception and not a pattern to extend elsewhere.
 
 ---
 
@@ -721,7 +806,7 @@ deliberate conversation with the user first)
 2. **Do not redesign the architecture.** Every version so far has been
    built under an explicit "architecture is frozen, reuse every existing
    pattern exactly" constraint from the user, and it has held for
-   `v0.1` → `v0.5` without exception. Assume the same constraint applies
+   `v0.1` → `v0.6` without exception. Assume the same constraint applies
    until told otherwise.
 3. **When asked to plan/review before building**, do exactly that — no
    code, no file writes — and end with a concrete proposal, not just
