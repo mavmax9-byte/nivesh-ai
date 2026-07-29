@@ -54,6 +54,23 @@ class DocumentExtractionRepository:
         )
         return list(result.scalars().all())
 
+    async def list_by_company_with_sections(
+        self, company_id: uuid.UUID, limit: int = 50, offset: int = 0
+    ) -> list[DocumentExtraction]:
+        """Same as list_by_company, but with `sections` eager loaded --
+        added for knowledge_layer (v0.7), which embeds each DocumentSection
+        individually and would otherwise trigger a lazy load that fails
+        under an async session."""
+        result = await self._session.execute(
+            select(DocumentExtraction)
+            .options(*_DETAIL_OPTIONS)
+            .where(DocumentExtraction.company_id == company_id)
+            .order_by(DocumentExtraction.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
     # -- writes (flush only, except commit_extraction) --------------------
 
     async def create_extraction(self, data: dict) -> DocumentExtraction:

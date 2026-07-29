@@ -38,6 +38,9 @@ from nivesh.document_intelligence.validation import (
 from nivesh.financials.providers.factory import get_financial_data_provider
 from nivesh.financials.repository import FinancialStatementRepository
 from nivesh.financials.service import FinancialStatementService
+from nivesh.knowledge_layer.providers.factory import get_embedding_provider
+from nivesh.knowledge_layer.repository import KnowledgeEmbeddingRepository
+from nivesh.knowledge_layer.service import KnowledgeLayerService
 from nivesh.market_data.providers.factory import get_market_data_provider
 from nivesh.market_data.repository import CorporateActionRepository, HistoricalOHLCVRepository
 from nivesh.market_data.service import MarketDataService
@@ -374,4 +377,58 @@ def generate_technical_indicators(self, symbol: str) -> dict:
         return asyncio.run(_generate_technical_indicators(symbol))
     except Exception as exc:
         logger.exception("generate_technical_indicators_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_knowledge_embeddings(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            service = KnowledgeLayerService(
+                provider=get_embedding_provider(),
+                company_repository=CompanyRepository(session),
+                filing_repository=CorporateFilingRepository(session),
+                extraction_repository=DocumentExtractionRepository(session),
+                article_repository=NewsArticleRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+                embedding_repository=KnowledgeEmbeddingRepository(session),
+            )
+            result = await service.generate_embeddings(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "embeddings_generated": result.embeddings_generated,
+                "embeddings_unchanged": result.embeddings_unchanged,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_knowledge_embeddings",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def generate_knowledge_embeddings(self, symbol: str) -> dict:
+    """Gathers a company's textual knowledge (profile, filings, document
+    sections, news, research summaries) and embeds whatever has changed
+    since the last run (see knowledge_layer/service.py for the
+    checksum-skip mechanism that keeps repeat runs cheap).
+
+    Deliberately **not** auto-chained from any upstream sync task in this
+    version -- knowledge sources span four different upstream modules
+    (news, filings, document extraction, research dossier refresh), and
+    each embedding call has a real cost; wiring this to fire automatically
+    after every one of those syncs is a reasonable future step, not
+    assumed here. Triggered only via POST /knowledge/generate/{symbol}
+    today. Retried like every other task on failure -- a missing
+    OPENAI_API_KEY (EmbeddingProviderError) is retried the same as any
+    other error, consistent with this codebase's established "retry
+    everything, even permanent failures" behavior (see PROJECT_CONTEXT.md's
+    Celery section for why that's kept rather than special-cased here).
+    """
+    try:
+        return asyncio.run(_generate_knowledge_embeddings(symbol))
+    except Exception as exc:
+        logger.exception("generate_knowledge_embeddings_failed", extra={"symbol": symbol})
         raise self.retry(exc=exc) from exc

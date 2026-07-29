@@ -14,6 +14,7 @@ SourceType = Literal[
     "document_extraction",
     "news",
     "technical_indicator",
+    "knowledge_embedding",
 ]
 
 

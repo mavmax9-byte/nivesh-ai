@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Import every model module so Base.metadata is fully populated before
@@ -15,6 +16,7 @@ from nivesh.core.db import Base
 from nivesh.corporate_filings import models as _corporate_filings_models  # noqa: F401
 from nivesh.document_intelligence import models as _document_intelligence_models  # noqa: F401
 from nivesh.financials import models as _financials_models  # noqa: F401
+from nivesh.knowledge_layer import models as _knowledge_layer_models  # noqa: F401
 from nivesh.main import create_app
 from nivesh.market_data import models as _market_data_models  # noqa: F401
 from nivesh.news_intelligence import models as _news_intelligence_models  # noqa: F401
@@ -59,6 +61,12 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         )
 
     async with engine.begin() as conn:
+        # knowledge_embeddings' Vector column type (pgvector) needs the
+        # extension present before create_all -- mirrors what the real
+        # migration does (0008_knowledge_layer.py), since this fixture
+        # builds the test schema directly from ORM metadata rather than by
+        # running Alembic migrations.
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)

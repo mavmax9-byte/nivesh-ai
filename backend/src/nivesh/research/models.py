@@ -55,6 +55,10 @@ EVENT_TYPE_VERSION_CREATED = "version_created"
 # "document_extraction" are populated by their respective sprints'
 # pipelines -- "news" and "technical_indicator" exist now so later sprints
 # (which add those data sources) extend this catalog, not the schema.
+# "knowledge_embedding" was added in v0.7 (Knowledge Layer) -- unlike
+# "news"/"technical_indicator", it was not pre-reserved since Sprint 3,
+# since nothing before v0.7 anticipated an embeddings/semantic-retrieval
+# module; it follows the exact same additive recipe those two did.
 SOURCE_TYPE_MARKET_DATA = "market_data"
 SOURCE_TYPE_FINANCIAL_DATA = "financial_data"
 SOURCE_TYPE_CORPORATE_ACTION = "corporate_action"
@@ -62,6 +66,7 @@ SOURCE_TYPE_CORPORATE_FILING = "corporate_filing"
 SOURCE_TYPE_DOCUMENT_EXTRACTION = "document_extraction"
 SOURCE_TYPE_NEWS = "news"
 SOURCE_TYPE_TECHNICAL_INDICATOR = "technical_indicator"
+SOURCE_TYPE_KNOWLEDGE_EMBEDDING = "knowledge_embedding"
 
 
 class CompanyResearchDossier(Base):

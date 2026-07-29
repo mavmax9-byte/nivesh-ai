@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
+    # Knowledge Layer (v0.7) -- embedding generation via OpenAI's API.
+    # No other module in this codebase calls an external API requiring a
+    # key, so this is the first secret of its kind; None by default so the
+    # app/worker still start without it (only knowledge_layer's provider
+    # fails, at call time, if it's unset).
+    OPENAI_API_KEY: str | None = None
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_DIMENSIONS: int = 1536
+
     @property
     def SYNC_DATABASE_URL(self) -> str:
         """Synchronous DSN, used by Alembic which does not run in an event loop."""
