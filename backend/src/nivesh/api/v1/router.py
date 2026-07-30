@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from nivesh.ai_agents.router import fundamental_router as ai_agents_fundamental_router
 from nivesh.ai_agents.router import router as ai_agents_router
 from nivesh.api.v1.health import router as health_router
 from nivesh.api.v1.version import router as version_router
@@ -33,3 +34,4 @@ api_v1_router.include_router(portfolios_router)
 api_v1_router.include_router(research_router)
 api_v1_router.include_router(retrieval_engine_router)
 api_v1_router.include_router(ai_agents_router)
+api_v1_router.include_router(ai_agents_fundamental_router)

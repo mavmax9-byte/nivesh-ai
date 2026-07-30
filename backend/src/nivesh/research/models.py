@@ -59,6 +59,13 @@ EVENT_TYPE_VERSION_CREATED = "version_created"
 # "news"/"technical_indicator", it was not pre-reserved since Sprint 3,
 # since nothing before v0.7 anticipated an embeddings/semantic-retrieval
 # module; it follows the exact same additive recipe those two did.
+# "agent_finding" was added in v0.9 (ai_agents' Fundamental Analyst) --
+# also not pre-reserved, following the same recipe again. Unlike
+# knowledge_embedding/technical_indicator (aggregate-per-run evidence,
+# see ResearchSource's own docstring below), an agent finding is linked
+# one row per finding (reference_id = the AgentFinding's own id), the
+# same discrete shape corporate_filing/document_extraction/news use --
+# see ai_agents/service.py's _link_to_research_dossier.
 SOURCE_TYPE_MARKET_DATA = "market_data"
 SOURCE_TYPE_FINANCIAL_DATA = "financial_data"
 SOURCE_TYPE_CORPORATE_ACTION = "corporate_action"
@@ -67,6 +74,7 @@ SOURCE_TYPE_DOCUMENT_EXTRACTION = "document_extraction"
 SOURCE_TYPE_NEWS = "news"
 SOURCE_TYPE_TECHNICAL_INDICATOR = "technical_indicator"
 SOURCE_TYPE_KNOWLEDGE_EMBEDDING = "knowledge_embedding"
+SOURCE_TYPE_AGENT_FINDING = "agent_finding"
 
 
 class CompanyResearchDossier(Base):

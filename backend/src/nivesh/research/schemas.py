@@ -15,6 +15,7 @@ SourceType = Literal[
     "news",
     "technical_indicator",
     "knowledge_embedding",
+    "agent_finding",
 ]
 
 

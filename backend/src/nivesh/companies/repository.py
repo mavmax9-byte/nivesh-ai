@@ -47,6 +47,17 @@ class CompanyRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_id(self, company_id: uuid.UUID) -> Company | None:
+        """Added for ai_agents (v0.9): AgentContext.company_id (agents/
+        base.py) is a company UUID, not a symbol, unlike every other
+        module's symbol-keyed lookups -- FundamentalAnalystAgent.run()
+        needs to resolve it back to a Company (and its symbol) before it
+        can call retrieval_engine, which is symbol-keyed."""
+        result = await self._session.execute(
+            select(Company).options(selectinload(Company.exchange)).where(Company.id == company_id)
+        )
+        return result.scalar_one_or_none()
+
     async def list(self, limit: int = 50, offset: int = 0) -> list[Company]:
         result = await self._session.execute(
             select(Company)

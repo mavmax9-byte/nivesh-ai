@@ -18,6 +18,11 @@ import asyncio
 import logging
 import uuid
 
+from nivesh.ai_agents.agents.fundamental.agent import FundamentalAnalystAgent
+from nivesh.ai_agents.agents.fundamental.validation import InvestmentAdviceDetectedError
+from nivesh.ai_agents.providers.factory import get_llm_provider
+from nivesh.ai_agents.repository import AgentFindingRepository
+from nivesh.ai_agents.service import AIAgentsService
 from nivesh.companies.repository import CompanyRepository, ExchangeRepository
 from nivesh.core.celery_app import celery_app
 from nivesh.core.db import AsyncSessionLocal, engine
@@ -49,6 +54,8 @@ from nivesh.news_intelligence.repository import NewsArticleRepository
 from nivesh.news_intelligence.service import NewsIntelligenceService
 from nivesh.research.repository import ResearchDossierRepository
 from nivesh.research.service import ResearchPipelineService
+from nivesh.retrieval_engine.repository import RetrievalRepository
+from nivesh.retrieval_engine.service import RetrievalEngineService
 from nivesh.technical_intelligence.providers.factory import get_technical_data_provider
 from nivesh.technical_intelligence.repository import TechnicalIndicatorRepository
 from nivesh.technical_intelligence.service import TechnicalIntelligenceService
@@ -431,4 +438,77 @@ def generate_knowledge_embeddings(self, symbol: str) -> dict:
         return asyncio.run(_generate_knowledge_embeddings(symbol))
     except Exception as exc:
         logger.exception("generate_knowledge_embeddings_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_fundamental_analysis(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            company_repository = CompanyRepository(session)
+            agent = FundamentalAnalystAgent(
+                retrieval_service=RetrievalEngineService(
+                    embedding_provider=get_embedding_provider(),
+                    company_repository=company_repository,
+                    evidence_repository=RetrievalRepository(session),
+                ),
+                llm_provider=get_llm_provider(),
+                company_repository=company_repository,
+            )
+            service = AIAgentsService(
+                agent=agent,
+                company_repository=company_repository,
+                finding_repository=AgentFindingRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            result = await service.run_analysis(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "agent_code": result.agent_code,
+                "confidence_score": result.confidence_score,
+                "evidence_sufficiency": result.evidence_sufficiency,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_fundamental_analysis",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def generate_fundamental_analysis(self, symbol: str) -> dict:
+    """Runs the Fundamental Analyst (ai_agents' first concrete specialist
+    agent, v0.9) for a company: retrieves ranked evidence via
+    RetrievalEngineService (reusing it exactly as-is -- zero new
+    retrieval logic, see agents/fundamental/agent.py), calls the LLM
+    behind the LLMProvider abstraction, validates/guards the structured
+    output (citation enforcement, investment-advice-language rejection --
+    see agents/fundamental/validation.py), persists the result to
+    agent_findings, and links it into the Research Dossier.
+
+    Unlike retrieval_engine's semantic leg, a failed/unparseable LLM call
+    is never silently degraded into a placeholder finding -- see
+    agent.py's module docstring. LLMProviderError/LLMResponseParsingError
+    are retried like any other failure in this codebase (see
+    PROJECT_CONTEXT.md's Celery section for why "retry everything, even
+    permanent failures" is kept rather than special-cased here).
+    InvestmentAdviceDetectedError is the one exception to that -- like
+    DuplicateExtractionError, it represents a genuine, non-transient
+    rejection (retrying the identical prompt against the identical
+    evidence would not produce a materially different outcome) and is
+    logged and left failed, not retried.
+
+    Not auto-chained from any upstream sync, for the same cost-profile
+    reason generate_knowledge_embeddings isn't -- triggered only via
+    POST /agents/fundamental/{symbol} today.
+    """
+    try:
+        return asyncio.run(_generate_fundamental_analysis(symbol))
+    except InvestmentAdviceDetectedError:
+        logger.error("generate_fundamental_analysis_advice_rejected", extra={"symbol": symbol})
+        raise
+    except Exception as exc:
+        logger.exception("generate_fundamental_analysis_failed", extra={"symbol": symbol})
         raise self.retry(exc=exc) from exc

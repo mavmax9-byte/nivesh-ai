@@ -52,6 +52,17 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_DIMENSIONS: int = 1536
 
+    # ai_agents (v0.9) -- LLM reasoning for the Fundamental Analyst, via
+    # OpenAI's chat completions API. Reuses OPENAI_API_KEY above rather
+    # than introducing a second secret: one OpenAI account now covers
+    # both the embedding calls (knowledge_layer) and this chat-completion
+    # call. Low temperature is deliberate -- this is financial analysis,
+    # not creative writing, and low temperature reduces run-to-run
+    # variance (see ai_agents/providers/openai_provider.py).
+    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_MAX_OUTPUT_TOKENS: int = 2000
+    LLM_TEMPERATURE: float = 0.1
+
     @property
     def SYNC_DATABASE_URL(self) -> str:
         """Synchronous DSN, used by Alembic which does not run in an event loop."""

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 # Import every model module so Base.metadata is fully populated before
 # create_all/drop_all run in the db_session fixture below.
+from nivesh.ai_agents import models as _ai_agents_models  # noqa: F401
 from nivesh.companies import models as _companies_models  # noqa: F401
 from nivesh.config import get_settings
 from nivesh.core.db import Base

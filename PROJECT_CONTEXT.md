@@ -5,7 +5,7 @@ conversation (or a new human engineer) should be able to read this file and
 continue development with zero loss of context. Written as an onboarding
 document for a Senior Staff Engineer joining the project.
 
-Last updated: after v0.8 (Retrieval Engine).
+Last updated: after v0.9 (Fundamental Analyst).
 
 ---
 
@@ -54,26 +54,39 @@ Next.js (frontend, :3000)  →  FastAPI (backend, :8000, /api/v1)  →  PostgreS
   provider (Clerk/Auth.js per the external architecture docs) and is not
   implemented.
 - No AI *reasoning* (no LLM calls, no summarization, no report generation,
-  no recommendations) anywhere outside `ai_agents`, which remains a
-  fully-stubbed placeholder (see §12). This was a hard constraint through
-  v0.1–v0.6. **v0.7 narrowly amended it**, after an explicit user
-  conversation (see §13, point 1): `knowledge_layer` embeds already-
-  persisted text (via a real external embedding API) and stores/searches
-  the resulting vectors in Postgres (`pgvector`) — this is the first
-  embeddings/vector-DB usage in the codebase, but it is retrieval
-  infrastructure only. It does not read, summarize, or reason about what
-  it retrieves; nothing outside `ai_agents` is allowed to do that. **v0.8**
-  added `retrieval_engine`, a second retrieval-only module: it combines
-  `knowledge_layer`'s semantic search with structured SQL fetches from
-  `financials`/`technical_intelligence`/`corporate_filings`/
-  `document_intelligence`/`news_intelligence`, deterministically scores,
-  deduplicates, and ranks the result, and packages it (plus a citation-
-  annotated text block) for a future consumer — but, exactly like
-  `knowledge_layer`, it never reasons about what it retrieves. It is the
-  intended single evidence-retrieval surface for `ai_agents` once that
-  layer is built (see §12). Every other module's ingestion, normalization,
-  validation, and categorization remains fully deterministic (fixed lookup
-  tables, regex/string heuristics, arithmetic).
+  no recommendations) anywhere outside `ai_agents`. This was a hard
+  constraint through v0.1–v0.6. **v0.7 narrowly amended it**, after an
+  explicit user conversation (see §13, point 1): `knowledge_layer` embeds
+  already-persisted text (via a real external embedding API) and
+  stores/searches the resulting vectors in Postgres (`pgvector`) — this is
+  the first embeddings/vector-DB usage in the codebase, but it is
+  retrieval infrastructure only; it does not read, summarize, or reason
+  about what it retrieves. **v0.8** added `retrieval_engine`, a second
+  retrieval-only module: it combines `knowledge_layer`'s semantic search
+  with structured SQL fetches from `financials`/`technical_intelligence`/
+  `corporate_filings`/`document_intelligence`/`news_intelligence`,
+  deterministically scores, deduplicates, and ranks the result, and
+  packages it (plus a citation-annotated text block) for a downstream
+  consumer — but, exactly like `knowledge_layer`, it never reasons about
+  what it retrieves. **v0.9 is the first version to actually cross the
+  reasoning line**, exactly where the platform's architecture always
+  intended it to: `ai_agents` is no longer a fully-stubbed placeholder.
+  Its first concrete specialist agent, the **Fundamental Analyst**
+  (`ai_agents/agents/fundamental/`), calls a real LLM (OpenAI's chat
+  completions API, behind an `LLMProvider` abstraction — see §8) to
+  analyze a company's financial fundamentals, using `retrieval_engine`'s
+  `build_context_package` as its only source of evidence — zero new
+  retrieval logic was added anywhere for this. The reasoning itself is
+  wrapped in deterministic, non-LLM guardrails (citation-index
+  validation, a hard investment-advice-language filter, an
+  evidence-coverage confidence floor — see §7/§9/§13) precisely because
+  this is now the one place in the codebase where an ungrounded or
+  unsafe model output is actually possible; every other module's
+  ingestion, normalization, validation, and categorization remains fully
+  deterministic (fixed lookup tables, regex/string heuristics,
+  arithmetic), and `InvestmentCommitteeOrchestrator` (the multi-agent
+  aggregation/synthesis layer) remains unimplemented — v0.9 built one
+  working specialist agent, not the Investment Committee (see §12).
 - No object/blob storage (S3, MinIO, etc.) anywhere in the stack. This was
   an explicit decision for v0.4 (extracted text goes into Postgres `Text`
   columns) and nothing in `config.py`/`docker-compose.yml` provides one.
@@ -123,7 +136,8 @@ nivesh-ai/
 │   │   ├── technical_intelligence/ # v0.6: Technical Intelligence Engine
 │   │   ├── knowledge_layer/     # v0.7: Knowledge Layer (embeddings & semantic retrieval)
 │   │   ├── retrieval_engine/    # v0.8: Retrieval Engine (hybrid evidence retrieval)
-│   │   ├── ai_agents/           # Investment Committee -- fully stubbed, no logic
+│   │   ├── ai_agents/           # v0.9: Fundamental Analyst (first concrete agent);
+│   │   │                        # InvestmentCommitteeOrchestrator still stubbed
 │   │   └── ingestion/tasks.py   # every Celery task, one shared file
 │   └── tests/                   # mirrors src/ 1:1 by domain, plus conftest.py
 │
@@ -170,6 +184,22 @@ its own, it composes the six sibling repositories (`financials`,
 `news_intelligence`, `knowledge_layer`) that already own the data it
 retrieves — see §6.
 
+`ai_agents` (v0.9) is a different kind of deviation: it is the first
+module whose `providers/` package abstracts an LLM (`LLMProvider`, not a
+data-ingestion source) and the first module with a two-level internal
+structure. `ai_agents/agents/fundamental/` is a self-contained specialist-
+agent package (`agent.py`, `prompts.py`, `queries.py`, `schemas.py`,
+`validation.py`) sitting *inside* the module, not a sibling top-level
+module — the intended template for every future specialist agent named
+in `agents/base.py`'s docstring (Technical Analysis, Valuation, News
+Intelligence, Macro Economy, Risk Analysis, Portfolio Analysis,
+Compliance — see §12). `ai_agents/providers/` stays module-level and
+shared across all of them, the same way `retrieval_engine` reuses
+`knowledge_layer`'s single `EmbeddingProvider` rather than each future
+agent inventing its own LLM plumbing (see §8). `ai_agents/models.py` /
+`repository.py` / `service.py` are new for v0.9 — the module had **zero**
+database presence before this version (see §4).
+
 ### Dependencies (`backend/pyproject.toml`)
 
 Runtime: `fastapi`, `uvicorn[standard]`, `sqlalchemy`, `alembic`, `asyncpg`,
@@ -199,10 +229,20 @@ applied in order, no branches:
 | `0006_news_intelligence` | `news_articles` |
 | `0007_technical_intelligence` | `technical_indicators` |
 | `0008_knowledge_layer` | `knowledge_embeddings` (also runs `CREATE EXTENSION IF NOT EXISTS vector`) |
+| `0009_agent_findings` | `agent_findings` |
 
 **v0.8 (Retrieval Engine) added no migration and no table** — `retrieval_engine`
 owns no persistent state (stateless by explicit user decision during v0.8
-planning; see §13 and §14), so the highest migration remains `0008`.
+planning; see §13 and §14).
+
+**v0.9 (Fundamental Analyst) added `0009_agent_findings`** —
+`ai_agents`' first-ever migration and first-ever database table. A
+deliberate divergence from `retrieval_engine`'s stateless choice
+(explicit `AskUserQuestion` decision during v0.9 planning, see §13 point
+1c): a specialist agent's finding is a durable analysis result worth
+looking back on (and worth `GET /agents/fundamental/{symbol}` reading
+back — see §16), unlike a retrieval call, which is a transient lookup
+over evidence every other module already owns.
 
 **`0008_knowledge_layer` requires the Postgres `vector` extension
 (pgvector)** — the first migration in this project with an extension
@@ -241,6 +281,7 @@ document_sections.document_extraction_id -> document_extractions.id
 news_articles.company_id         -> companies.id
 technical_indicators.company_id  -> companies.id
 knowledge_embeddings.company_id  -> companies.id
+agent_findings.company_id        -> companies.id
 ```
 
 `knowledge_embeddings.source_id` is a **bare UUID with no FK constraint**,
@@ -305,6 +346,22 @@ table, so a real FK isn't possible.
    this pattern exists specifically to avoid paying for unchanged content.
    `KnowledgeEmbedding` is this codebase's second entity-attribute-value-
    style table (after `TechnicalIndicator`).
+6. **Upsert-recomputed, not gated by a checksum** (`ai_agents`'
+   `AgentFinding`, added v0.9): like pattern 4 (`TechnicalIndicator`), a
+   row is not an immutable fact but the output of a reasoning pass over
+   currently-available evidence, so a re-run supersedes rather than
+   amends the prior one — `ON CONFLICT DO UPDATE` on `(company_id,
+   agent_code)`, one current row per company per agent, no version
+   history table. Unlike `KnowledgeEmbedding` (pattern 5), there is no
+   content-checksum guard skipping the (paid) LLM call on unchanged
+   input — evidence for a company can change even when no single
+   upstream row's checksum does (a new corporate filing arriving changes
+   *which* evidence retrieval_engine ranks highest, not any one
+   evidence row's own content), so "skip if nothing changed" doesn't
+   have a cheap, correct signal to key off yet. Every
+   `POST /agents/fundamental/{symbol}` call re-runs the full pipeline,
+   including the LLM call — a real cost tradeoff, accepted for this
+   foundational version (see §14).
 
 ### Reference/lookup tables
 
@@ -350,20 +407,26 @@ hoc by application code.
   Postgres is unreachable, so the rest of the suite stays runnable without
   a DB — as of v0.7, this fixture also runs `CREATE EXTENSION IF NOT
   EXISTS vector` before `create_all`, since `KnowledgeEmbedding`'s column
-  type needs it (see §4). As of v0.8: **438 tests**, all passing with a
+  type needs it (see §4). As of v0.9: **489 tests**, all passing with a
   live Postgres that has the `vector` extension installed, Ruff and mypy
   both clean across the whole `src/` tree. `retrieval_engine` has a
   `test_repositories.py` despite owning no table of its own — it exercises
   `RetrievalRepository`'s delegation to each sibling repository against
   real seeded rows, including the document-section flattening logic (see
-  §6). Every version from v0.3 through v0.8 has additionally passed a live
+  §6). Every version from v0.3 through v0.9 has additionally passed a live
   end-to-end verification pass (real FastAPI + Celery + Redis + Postgres
   stack, a real company symbol, real upstream data) before being declared
   production-ready — see §15 point 6; this has repeatedly caught real bugs
   unit tests alone did not (§11's per-version entries list what was found
-  each time). **One exception carried over from v0.7**: the live pass
-  still cannot exercise the actual OpenAI embeddings API call (no
-  `OPENAI_API_KEY` in the verification sandbox) — this now also means
+  each time). **One exception carried over from v0.7/v0.8**: the live pass
+  still cannot exercise a real OpenAI API call (no `OPENAI_API_KEY` in the
+  verification sandbox) — v0.9's live pass compensated as far as possible
+  by exercising the full real pipeline (real `FundamentalAnalystAgent`,
+  real `RetrievalEngineService` against real Postgres data for TCS) with
+  only the HTTP call to OpenAI itself swapped for a stub, confirming
+  citation-index enforcement, the investment-advice-language guardrail,
+  and the schema-parsing guardrail all worked against genuine evidence
+  identities (see §14). This still previously meant
   `retrieval_engine`'s *semantic* leg couldn't be exercised live either,
   only its structured SQL leg and its graceful degradation when the
   semantic leg fails (which **was** verified live — see §14).
@@ -428,6 +491,15 @@ hoc by application code.
   aggregating already-owned evidence is this module's entire job. No
   ranking/scoring logic lives here; that's `retrieval_engine/service.py`
   and `normalization.py`'s job (§7).
+- **`ai_agents`'s `AgentFindingRepository` (v0.9) is back to the
+  "ordinary" single-table shape** — it owns `agent_findings` (§4) and is
+  the first single-table repository added since `KnowledgeEmbedding`.
+  Its `upsert` commits its own write directly (mirroring
+  `TechnicalIndicatorRepository.bulk_upsert`'s "every value here is a
+  pure recomputation" reasoning), and it also exposes the same bare
+  `commit()` passthrough every aggregate-root repository provides, used
+  by `AIAgentsService` to durably persist Research Dossier evidence rows
+  on the same shared session (§10).
 
 ---
 
@@ -478,6 +550,27 @@ hoc by application code.
   new pattern for this codebase (every other module either succeeds or
   raises) worth reusing whenever a future service similarly combines an
   external-dependency leg with an internal-only one.
+- **`ai_agents/service.py` (v0.9)'s `AIAgentsService` returns to the
+  standard `validate → normalize → persist → link dossier` shape** —
+  the "provider" doing the real work is an LLM-backed reasoning agent
+  (`BaseAgent`, constructor-injected) rather than a data-ingestion
+  provider, and there is no separate normalization step since the agent
+  already returns a fully-formed, guard-validated `AgentFinding`
+  (validation happens inside the agent itself — see `agents/fundamental/
+  agent.py` and §13). One deliberate **asymmetry with `retrieval_engine`'s
+  degrade-gracefully pattern above**: a failed or unparseable LLM call is
+  **never** degraded into a placeholder finding the way a failed semantic
+  leg degrades into "zero semantic hits." Fewer evidence items is still
+  an honest result; a "finding" produced without the LLM actually
+  reasoning would be fabricated output, which `ai_agents`' own original
+  placeholder docstring already ruled out before any of it was
+  implemented. `LLMProviderError`/`LLMResponseParsingError` simply
+  propagate. A discrete, one-row-per-finding Research Dossier evidence
+  row is attached per run (`SOURCE_TYPE_AGENT_FINDING`, §10) — unlike
+  `technical_intelligence`/`knowledge_layer`'s aggregate-per-run rows,
+  one agent run produces exactly one finding, so the discrete shape
+  `corporate_filings`/`document_intelligence`/`news_intelligence` already
+  use is the correct fit here, not an aggregate range.
 
 ---
 
@@ -566,6 +659,35 @@ hoc by application code.
     provider-abstraction reuse across modules — `retrieval_engine`
     depends on `knowledge_layer`'s public `EmbeddingProvider` interface,
     never a concrete class — not a violation of point 3 in §13.
+  - `ai_agents`'s `LLMProvider` (added v0.9) is the **first provider in
+    this codebase that abstracts an LLM chat-completion call**, not an
+    embedding call or a data-ingestion fetch — same shape as every other
+    provider (`ABC` + frozen-dataclass DTO + `factory.py` + one concrete
+    class, `OpenAIChatProvider`), and the same "reuse `httpx`, no vendor
+    SDK dependency" choice `OpenAIEmbeddingProvider` already made. It
+    reuses the existing `OPENAI_API_KEY` setting (v0.7) rather than
+    introducing a second secret — one OpenAI account covers both the
+    embedding calls and this chat-completion call. Two exception
+    classes, not one (unlike `EmbeddingProviderError`'s single class):
+    `LLMProviderError` (the request never produced a usable response —
+    network/HTTP/auth failure) and `LLMResponseParsingError` (a response
+    came back but its content isn't valid JSON or doesn't match the
+    requested schema) — the caller (`agents/fundamental/agent.py`) needs
+    to distinguish these, since the second case means the model actually
+    ran but the structured-output guarantee didn't hold. Requests the
+    vendor's JSON-schema structured-output mode
+    (`response_format: {"type": "json_schema", ...}`, `"strict": False`
+    — see the provider's own docstring for why `strict` mode was not
+    used) so schema drift is caught at the API boundary, not only after
+    the fact in Python — this was **not live-verified against the real
+    OpenAI API** during v0.9's development (no `OPENAI_API_KEY` in the
+    sandbox, the same gap `OpenAIEmbeddingProvider` had at v0.7 — see
+    §14). Model/temperature/max-output-tokens are new `config.py`
+    settings (`LLM_MODEL="gpt-4o-mini"`, `LLM_TEMPERATURE=0.1`,
+    `LLM_MAX_OUTPUT_TOKENS=2000`) — low temperature is deliberate, not a
+    default left untouched: this is financial analysis, not creative
+    writing, and low temperature directly supports the determinism
+    `agents/fundamental/validation.py`'s guardrails depend on (§13).
 
 ---
 
@@ -608,13 +730,21 @@ def do_the_work(self, arg: str) -> dict:
   v0.3 end-to-end verification and must be present in **every** task, not
   just the ones that existed when it was fixed.
 - Exceptions that represent a genuine, non-retryable conflict (currently
-  only `DuplicateExtractionError` from `document_intelligence`) are caught
-  **before** the generic `except Exception` handler and re-raised without
-  `self.retry(...)` — logged and left failed, not retried. Every other
-  exception (including validation failures like `InvalidFilingDataError`)
-  is retried blindly up to 3 times, even though a permanent validation
-  failure will never succeed on retry — this is the established, if
-  imperfect, behavior everywhere in this codebase; don't "fix" it locally
+  `DuplicateExtractionError` from `document_intelligence` and, as of
+  v0.9, `InvestmentAdviceDetectedError` from `ai_agents/agents/
+  fundamental/validation.py`) are caught **before** the generic `except
+  Exception` handler and re-raised without `self.retry(...)` — logged
+  and left failed, not retried. `InvestmentAdviceDetectedError` fits the
+  same "genuine conflict, not transient" reasoning as
+  `DuplicateExtractionError`: retrying the identical prompt against the
+  identical evidence would not produce a materially different outcome,
+  and it is a compliance rejection, not a fault to paper over by
+  retrying it into eventually passing. Every other exception (including
+  validation failures like `InvalidFilingDataError`, and — new in v0.9 —
+  `LLMProviderError`/`LLMResponseParsingError`) is retried blindly up to
+  3 times, even though a permanent validation failure will never succeed
+  on retry — this is the established, if imperfect, behavior everywhere
+  in this codebase; don't "fix" it locally
   in one module without discussing it, since consistency has been treated
   as more important than local optimality here.
 - **Auto-chaining convention**: a successful sync task may trigger the
@@ -638,10 +768,17 @@ def do_the_work(self, arg: str) -> dict:
   discussion with the user before assuming it, not decided unilaterally
   during v0.7 (see `knowledge_layer/service.py`'s module docstring). It is
   triggered only via `POST /knowledge/generate/{symbol}` today.
+  `generate_fundamental_analysis` (added v0.9) is **also deliberately not
+  auto-chained from anything**, for the same cost-profile reason — an LLM
+  chat-completion call is real, paid API cost, and this agent's
+  fundamentals-relevant evidence (financial statements, filings, document
+  sections) already spans multiple upstream syncs; triggered only via
+  `POST /agents/fundamental/{symbol}` today.
 - Current task inventory (`ingestion.*`): `refresh_company_dossier`,
   `sync_company_market_data`, `sync_company_financials`,
   `sync_company_filings`, `extract_filing_document`, `sync_company_news`,
-  `generate_technical_indicators`, `generate_knowledge_embeddings`.
+  `generate_technical_indicators`, `generate_knowledge_embeddings`,
+  `generate_fundamental_analysis`.
   **v0.8 (Retrieval Engine) added no Celery task** — it does no
   background/ingestion work, only synchronous reads (see §7), so there
   was nothing to queue.
@@ -658,10 +795,10 @@ def do_the_work(self, arg: str) -> dict:
 ## 10. Research Dossier Integration
 
 `research/models.py` is the intentional cross-domain seam every other
-module plugs into, and it has been extended **five times** now (v0.3,
-v0.4, v0.5, v0.6, v0.7) using the identical recipe, with **zero changes**
-to `ResearchPipelineService`'s or `ResearchDossierRepository`'s existing
-write logic any time:
+module plugs into, and it has been extended **six times** now (v0.3,
+v0.4, v0.5, v0.6, v0.7, v0.9) using the identical recipe, with **zero
+changes** to `ResearchPipelineService`'s or `ResearchDossierRepository`'s
+existing write logic any time:
 
 ```python
 SOURCE_TYPE_MARKET_DATA = "market_data"
@@ -672,6 +809,7 @@ SOURCE_TYPE_DOCUMENT_EXTRACTION = "document_extraction"  # added v0.4
 SOURCE_TYPE_NEWS = "news"                             # populated v0.5
 SOURCE_TYPE_TECHNICAL_INDICATOR = "technical_indicator"  # populated v0.6
 SOURCE_TYPE_KNOWLEDGE_EMBEDDING = "knowledge_embedding"  # added v0.7
+SOURCE_TYPE_AGENT_FINDING = "agent_finding"              # added v0.9
 ```
 
 `SOURCE_TYPE_NEWS` and `SOURCE_TYPE_TECHNICAL_INDICATOR` had both already
@@ -679,14 +817,15 @@ existed as reserved-but-unused constants since Sprint 3 (see the module's
 own "extend the catalog, not the schema" docstring, written in
 anticipation of exactly this) -- v0.5 and v0.6 were simply the first
 versions to actually populate each one. `SOURCE_TYPE_KNOWLEDGE_EMBEDDING`
-is different: **it was not pre-reserved**, since nothing before v0.7
-anticipated a Knowledge Layer — it was added fresh, following the exact
-same additive recipe (one new constant in `research/models.py`, one new
-`Literal` value in `research/schemas.py`, nothing else in `research/`
-changes). Either way, **zero changes** to `ResearchPipelineService` or
-`ResearchDossierRepository` were needed, only a plain
-`from nivesh.research.models import SOURCE_TYPE_X` import in each
-module's `service.py`.
+and `SOURCE_TYPE_AGENT_FINDING` are different: **neither was
+pre-reserved**, since nothing before v0.7/v0.9 respectively anticipated
+a Knowledge Layer or a concrete specialist agent — each was added fresh,
+following the exact same additive recipe (one new constant in
+`research/models.py`, one new `Literal` value in `research/schemas.py`,
+nothing else in `research/` changes). Either way, **zero changes** to
+`ResearchPipelineService` or `ResearchDossierRepository` were needed,
+only a plain `from nivesh.research.models import SOURCE_TYPE_X` import
+in each module's `service.py`.
 
 `ResearchSource`'s own docstring (research/models.py) also already
 specified, since Sprint 3, *how* `technical_indicator` evidence should be
@@ -752,9 +891,23 @@ as dossier evidence would conflate "this fact was established" (what
 `ResearchSource` means) with "this fact was looked up," which isn't the
 same claim — and would also cut against the stateless decision in §13/§14.
 
+**`ai_agents` (v0.9) integrates here again, and follows the discrete
+(not aggregate) linking shape** — `AIAgentsService._link_to_research_dossier`
+attaches one `ResearchSource` row per finding (`reference_id` = the
+persisted `AgentFinding`'s own id, `range_start`/`range_end=None`,
+`record_count=1`), the same one-row-per-item shape `corporate_filings`/
+`document_intelligence`/`news_intelligence` use, not the aggregate-range
+shape `technical_intelligence`/`knowledge_layer` use. This is a genuine
+difference from those two closest precedents: one Fundamental Analyst run
+produces exactly one finding (not many indicator values or many
+embeddings collapsed into one run), so there is nothing to aggregate —
+each finding is its own discrete fact worth its own evidence row, the
+same reasoning that makes a single filing or a single news article its
+own row rather than part of a range.
+
 ---
 
-## 11. Completed Versions (v0.1 – v0.8)
+## 11. Completed Versions (v0.1 – v0.9)
 
 | Version | Delivered | Key modules/tables |
 |---|---|---|
@@ -770,7 +923,9 @@ same claim — and would also cut against the stateless decision in §13/§14.
 
 | **v0.8 — Retrieval Engine** | The single evidence-retrieval surface intended for future AI agents (`ai_agents`, still unimplemented) — strictly retrieval, ranking, and packaging, no LLM calls, no reasoning, no recommendations (per the v0.8 spec's own explicit boundary). Combines two legs: **semantic** (reuses `knowledge_layer`'s own `EmbeddingProvider` and `KnowledgeEmbeddingRepository`, not a second implementation — see §8) and **structured SQL** (direct fetches from `financials`, `technical_intelligence`, `corporate_filings`, `document_intelligence`, `news_intelligence` — latest/recent facts, no query-text filtering, since a SQL fetch by identity/recency isn't a similarity search). Both legs land on one comparable 0..1 `relevance_score`: semantic hits via cosine similarity, structured evidence via a **deterministic recency-decay** score (`RECENCY_HALF_LIFE_DAYS = 180`, one shared half-life across all structured types — a documented simplification, not empirically tuned). Deduplicates by `(source_type, source_id)` — reusing `knowledge_layer`'s own `SOURCE_TYPE_*` values for the five source types it can also find semantically means an item found via *both* legs (e.g. a news article that's both the most recent story and a semantic match) merges into one item recording both retrieval paths, keeping the higher score. `EVIDENCE_SOURCE_FINANCIAL_STATEMENT`/`EVIDENCE_SOURCE_TECHNICAL_INDICATOR` are the only two new source-type constants, since `knowledge_layer` explicitly never embeds either. A Context Builder (`normalization.build_context_package`) assembles ranked evidence plus a deterministic, citation-annotated plain-text block (`context_text`) suitable as an LLM prompt's evidence section — formatting, not reasoning. **Stateless by explicit user decision during v0.8 planning** (`AskUserQuestion`, before any code was written): no retrieval call is persisted, no new table, no migration (see §4); `GET /retrieval/{symbol}/inspect` gives visibility into a *live* call's per-source fetch counts and pre/post-dedup totals instead. **The semantic leg degrades gracefully** — `EmbeddingProviderError` (e.g. missing `OPENAI_API_KEY`) is caught around just that leg, logged, and treated as zero semantic hits rather than failing the whole request; structured SQL evidence, which needs no external API, is unaffected. This was found and fixed during v0.8's own build (an initial version let a semantic-leg failure take down the entire retrieval call) — before any live E2E pass was run, and reflected in the test suite (`test_retrieve_evidence_degrades_gracefully_when_semantic_leg_fails`). Verified live against real TCS data: structured retrieval, context package assembly, and semantic-leg graceful degradation all confirmed working end-to-end; the semantic leg's actual hit-quality could not be live-verified for the same reason as v0.7 (no `OPENAI_API_KEY` in the sandbox) — see §14. | *(none — stateless, no migration)* |
 
-**Test count as of v0.8: 438 passing** (`pytest`, real Postgres with the
+| **v0.9 — Fundamental Analyst** | The first concrete specialist agent (`ai_agents/agents/fundamental/`), and the first version to actually cross the "no AI reasoning outside `ai_agents`" line `retrieval_engine`/`knowledge_layer` were both built to stop short of (per the v0.9 spec's own explicit boundary, following `FUNDAMENTAL_ANALYST_DESIGN.md`, a full technical design document reviewed with the user before any code was written — see §15 point 3). Analyzes one company's financial fundamentals using **only** evidence from `RetrievalEngineService.build_context_package` (zero new retrieval logic — `retrieval_engine`/`knowledge_layer` needed zero changes), filtered client-side to fundamentals-relevant evidence types (`financial_statement`, `corporate_filing`, `document_section`, `research_summary`, `company_profile` — technical indicators and news are out of scope for this agent, reserved for future specialist agents). Reasoning is behind a new `LLMProvider` abstraction (§8) — **OpenAI `gpt-4o-mini`**, chosen via explicit `AskUserQuestion` during v0.9 planning, reusing the existing `OPENAI_API_KEY` rather than a new secret. The LLM is wrapped in multiple deterministic, non-LLM guardrails, not trusted alone: (1) a **citation-index enforcement** system — every claim must cite a `[n]` reference into the evidence actually shown to the model; an out-of-range/hallucinated index gets that specific claim dropped (not the whole response rejected), and every surviving citation resolves back to a real `(source_type, source_id)` evidence identity; (2) a **hard, pattern-based investment-advice-language filter** (`InvestmentAdviceDetectedError`, buy/sell/hold/price-target patterns) that fails the whole run closed — the single most important guard given this platform's "research only, never trades" identity (§1); (3) a **two-part confidence score** that is never purely the model's self-report — a deterministic, pre-LLM evidence-coverage signal caps what the model's own reported confidence can raise the final score to; (4) a **deterministic "insufficient evidence" short-circuit** — when no `financial_statement` evidence exists at all, the LLM is never called; an explicit insufficient-evidence result is returned instead of guessing, per the v0.9 spec's own explicit requirement. Findings are **persisted** (`agent_findings`, `ai_agents`'s first-ever migration/table — an explicit `AskUserQuestion` decision, chosen over staying stateless like `retrieval_engine`, §13 point 1c) and linked into the Research Dossier as one discrete `SOURCE_TYPE_AGENT_FINDING` evidence row per run (§10). A deliberate asymmetry with `retrieval_engine`'s v0.8 precedent: a failed/unparseable LLM call is **never** degraded into a placeholder finding the way a failed semantic leg degrades into zero hits — that would be fabricated output, which `ai_agents`'s own pre-v0.9 placeholder docstring already ruled out; `LLMProviderError`/`LLMResponseParsingError` simply propagate and retry at the Celery layer, while `InvestmentAdviceDetectedError` fails closed without retry (§9). **Not live-verified against the real OpenAI API** — no `OPENAI_API_KEY` was available in the verification sandbox, the same gap carried from v0.7/v0.8, and the user again explicitly chose to document it rather than supply a key. Compensated as far as possible: the full pipeline was verified live end-to-end against real TCS data in Postgres with only the LLM HTTP call itself stubbed, confirming citation-index enforcement (a hallucinated index dropped, a valid one resolved to a genuine evidence row), the investment-advice filter, and the schema-parsing guardrail all work correctly against real evidence identities; the "insufficient evidence" path was verified **fully live, with zero stubbing at all**, since TCS has no synced financial statements in this sandbox (see §14). | `agent_findings` |
+
+**Test count as of v0.9: 489 passing** (`pytest`, real Postgres with the
 `vector` extension installed). Ruff and mypy both clean across the whole
 `src/` tree.
 
@@ -779,46 +934,53 @@ Commits (chronological, all on `main`):
 fixes → `d308b17` mypy fixes → `53b1e66` feat(v0.3) corporate filings →
 `d3f691c` feat(v0.4) document intelligence → `ae47f82` feat(v0.5) news
 intelligence → `084870c` feat(v0.6) technical intelligence → `9b0b621`
-feat(v0.7) knowledge layer → (v0.8 retrieval engine, see git log for the
-current hash).
+feat(v0.7) knowledge layer → `1f8f4ac` feat(v0.8) retrieval engine →
+(v0.9 fundamental analyst, see git log for the current hash).
 
 ---
 
-## 12. Current Roadmap (v0.9 onwards)
+## 12. Current Roadmap (v0.10 onwards)
 
-Nothing beyond v0.8 has been scoped or approved yet. Do not start
-implementing v0.9 without an explicit spec from the user — this project's
+Nothing beyond v0.9 has been scoped or approved yet. Do not start
+implementing v0.10 without an explicit spec from the user — this project's
 working pattern has consistently been: architecture review first (no code)
 → user confirms scope → implement → self-review → verify → commit/push.
-See §17 for the current v0.9 spec status.
+See §17 for the current v0.10 spec status.
 
-**What v0.4 through v0.8 were explicitly building toward**: document
+**What v0.4 through v0.9 were explicitly building toward**: document
 extractions, news articles, technical indicators, a semantic retrieval
-index, and now a hybrid ranked-evidence retrieval surface over all of it
-exist so a *future* version can consume them. Natural, foreshadowed next
+index, a hybrid ranked-evidence retrieval surface over all of it, and now
+one working specialist agent consuming that surface to actually reason —
+exist so a *future* version can build on them. Natural, foreshadowed next
 steps, roughly in dependency order:
 
-1. **The `ai_agents` / Investment Committee layer** — currently 100%
-   placeholder (`InvestmentCommitteeOrchestrator.request_analysis` always
-   raises `NotImplementedYetError`; `BaseAgent`/`AgentContext`/
-   `AgentFinding` define a contract with no implementations). This is
-   where AI/LLM *reasoning* is supposed to live, per the external
-   architecture docs' "Findings Store" / "Knowledge Layer" / "Evidence
-   Graph" concepts. `retrieval_engine` (v0.8) is now the direct,
-   purpose-built dependency this layer would consume — an agent would
-   call `RetrievalEngineService.build_context_package` (or
-   `GET /retrieval/{symbol}/context`) to get ranked, cited evidence to
-   reason over, rather than assembling that itself. This is the most
-   directly-enabled next step of anything on this list; v0.8 was
-   explicitly built to be exactly this dependency. Building `ai_agents`
-   is still a materially different kind of work (the first version to
-   actually do AI *reasoning*, as opposed to v0.7/v0.8's retrieval-only
-   scope) and should not be started casually. News sentiment analysis /
-   AI summarization of articles, and any trading strategy/signal/
-   forecasting logic built on top of `technical_intelligence`'s indicator
-   values, both belong here, not in `news_intelligence` or
-   `technical_intelligence` themselves — explicitly out of scope for
-   those versions per the user's instructions each time.
+1. **The rest of the `ai_agents` / Investment Committee layer.** v0.9
+   built exactly one specialist agent (`FundamentalAnalystAgent`) and
+   left `InvestmentCommitteeOrchestrator.request_analysis` untouched —
+   it still always raises `NotImplementedYetError`. Two genuinely
+   different pieces of work remain, both still fully unscoped:
+   - **More specialist agents** — `agents/base.py`'s docstring already
+     names eight more (Market Data, Technical Analysis, Valuation, News
+     Intelligence, Macro Economy, Risk Analysis, Portfolio Analysis,
+     Compliance). `ai_agents/agents/fundamental/` is the intended
+     template each would follow (§3/§12 of `FUNDAMENTAL_ANALYST_DESIGN.md`):
+     its own `agent.py`/`prompts.py`/`queries.py`/`schemas.py`/
+     `validation.py`, sharing the module-level `LLMProvider` abstraction
+     (§8) and the `agent_findings` table (one row per `(company_id,
+     agent_code)`, §4) rather than inventing new plumbing per agent.
+   - **The orchestrator itself** — aggregating multiple agents' findings,
+     detecting conflicts, weighted scoring, an LLM synthesis step, a
+     Compliance Agent pass before publication (per `orchestrator.py`'s
+     own docstring). Needs a real spec and its own architecture-review
+     pass before any code — v0.9 deliberately did not invent a Findings
+     Store schema or cross-agent aggregation logic; see
+     `FUNDAMENTAL_ANALYST_DESIGN.md` §13 for why that was left
+     unscoped rather than guessed at.
+   News sentiment analysis / AI summarization of articles, and any
+   trading strategy/signal/forecasting logic built on top of
+   `technical_intelligence`'s indicator values, both still belong to a
+   future specialist agent, not to `news_intelligence` or
+   `technical_intelligence` themselves.
 2. **A real filings-discovery provider** for `corporate_filings` (NSE/BSE
    announcements API or a commercial vendor) that supplies genuine
    document deep-links — this would make `document_intelligence`'s PDF
@@ -856,40 +1018,70 @@ steps, roughly in dependency order:
     shared `RECENCY_HALF_LIFE_DAYS = 180` and the plain
     `1 - cosine_distance` semantic score are deliberate, simple choices
     for a foundational version, not empirically validated against real
-    retrieval quality (see §13/§14). Once `ai_agents` (item 1) is
-    consuming this module's output for real, that's the point to revisit
-    tuning — not before, since there's no real usage signal to tune
-    against yet.
+    retrieval quality (see §13/§14). `ai_agents` (item 1) is now
+    consuming this module's output for real via the Fundamental
+    Analyst — once a real `OPENAI_API_KEY` is configured and this agent
+    has real runs to look at, that's the point to revisit tuning, not
+    before, since there was still no real usage signal to tune against
+    during v0.9's own development (no live LLM verification — see §14).
+11. **A numeric cross-check for the Fundamental Analyst** — comparing
+    LLM-stated financial figures against already-persisted `financials`
+    data (`FinancialRatio`/`ProfitAndLoss`) as an additional
+    hallucination guard, deliberately deferred out of v0.9's scope (an
+    explicit `AskUserQuestion` decision during v0.9 planning — see
+    `FUNDAMENTAL_ANALYST_DESIGN.md` §9 point 6) in favor of shipping the
+    other guardrails (citation enforcement, investment-advice filtering,
+    the evidence-confidence floor) first. Flagged in that design doc as
+    the module's most consequential known gap at launch — the first
+    thing to revisit once real Fundamental Analyst output exists.
+12. **Findings caching / cost optimization for `ai_agents`** — every
+    `POST /agents/fundamental/{symbol}` call re-runs the full pipeline
+    including the LLM call, unlike `knowledge_layer`'s checksum-gated
+    skip (§4 point 6). A future version could cache by a checksum of the
+    evidence actually shown to the model, the same `content_checksum`
+    idiom `KnowledgeEmbedding` already uses — not built in v0.9 without
+    real cost data to justify it.
+13. **Auto-chaining `generate_fundamental_analysis`** from upstream
+    syncs, once its OpenAI API cost profile has been explicitly
+    discussed with the user — the same reasoning that kept
+    `generate_knowledge_embeddings` (§9's v0.7 entry) and now
+    `generate_fundamental_analysis` (§9) manually triggered only, not
+    auto-wired, in their first versions.
 
 ---
 
 ## 13. Architectural Decisions That Must Never Change (without an explicit,
 deliberate conversation with the user first)
 
-1. **Determinism until `ai_agents` is explicitly greenlit — narrowly
-   amended by v0.7 and v0.8.** No AI *reasoning* (no LLM calls, no
-   summarization, no report generation, no recommendations, no sentiment
-   analysis, no knowledge graph) anywhere outside `ai_agents`. This was an
-   absolute constraint (also covering embeddings/vector search/evidence
-   ranking) through v0.1–v0.6, restated explicitly by the user for v0.4,
-   v0.5, and v0.6 (v0.5's restatement specifically named AI summarization,
-   sentiment analysis, and semantic search as excluded from
+1. **Determinism everywhere except `ai_agents` — narrowly amended by v0.7,
+   v0.8, and (for reasoning itself) v0.9.** No AI *reasoning* (no LLM
+   calls, no summarization, no report generation, no recommendations, no
+   sentiment analysis, no knowledge graph) anywhere outside `ai_agents`.
+   This was an absolute constraint (also covering embeddings/vector
+   search/evidence ranking) through v0.1–v0.6, restated explicitly by the
+   user for v0.4, v0.5, and v0.6 (v0.5's restatement specifically named AI
+   summarization, sentiment analysis, and semantic search as excluded from
    `news_intelligence`; v0.6's specifically named trading strategies,
    buy/sell signals, forecasting, and ML models as excluded from
    `technical_intelligence`). **v0.7 (Knowledge Layer) and v0.8 (Retrieval
-   Engine) are deliberate, narrow exceptions to the embeddings/vector-
+   Engine) were deliberate, narrow exceptions to the embeddings/vector-
    search/ranking half of this rule**, each made only after an explicit
    user conversation (the v0.7 spec named it: "This version introduces
    embeddings and vector search only... must not introduce AI reasoning,
    report generation, or investment recommendations"; the v0.8 spec named
    it: "This sprint must not invoke an LLM or generate analysis. It only
-   prepares high-quality evidence for future AI agents"). `knowledge_layer`
-   may embed text and run vector similarity search; `retrieval_engine` may
-   combine, score, deduplicate, rank, and package that evidence. Neither
-   may **read, summarize, or reason about** what it retrieves — that line
-   still belongs exclusively to `ai_agents`, unchanged. Do not read v0.7's
-   or v0.8's existence as a general license to add AI elsewhere; each is
-   one narrowly-scoped module, not a precedent.
+   prepares high-quality evidence for future AI agents") — neither was
+   allowed to **read, summarize, or reason about** what it retrieved.
+   **v0.9 is where reasoning itself was finally, explicitly allowed** —
+   but strictly *inside* `ai_agents`, per its own spec's boundary ("Do not
+   generate investment advice, buy/sell recommendations, target prices, or
+   portfolio guidance"), and wrapped in deterministic, non-LLM guardrails
+   precisely because this is now the one place ungrounded model output is
+   possible (§7/§9, §1c below). Every module outside `ai_agents` remains
+   exactly as deterministic as it always was — v0.7/v0.8/v0.9's existence
+   is not a general license to add AI elsewhere; each was one narrowly-
+   scoped, explicitly-approved exception, not a precedent to extend
+   casually.
 1a. **v0.7's specific embeddings/vector-search decisions are themselves
     frozen** (each was an explicit `AskUserQuestion` decision during v0.7
     planning, not a default): embedding provider is **OpenAI**
@@ -917,6 +1109,27 @@ deliberate conversation with the user first)
     `EmbeddingProviderError` rather than failing the whole request (§7).
     Changing any of these needs a fresh explicit conversation with the
     user first, the same as 1a.
+1c. **v0.9's specific Fundamental Analyst decisions are themselves
+    frozen** (each was either an explicit `AskUserQuestion` decision
+    during v0.9 planning or a hard requirement stated in the v0.9 spec
+    itself, not a default): LLM provider is **OpenAI `gpt-4o-mini`**
+    behind the `LLMProvider` abstraction (§8) — swappable, but the choice
+    itself was deliberate. Findings **are persisted** (`agent_findings`,
+    §4) — chosen over staying stateless like `retrieval_engine`. A
+    numeric cross-check against `financials` data is **deferred**, not
+    built in v0.9 (§12 item 11). Confidence is **never purely
+    LLM-self-reported** — a deterministic evidence-coverage signal always
+    caps the final score (§7/§8 of `FUNDAMENTAL_ANALYST_DESIGN.md`).
+    Every claim **must** cite real evidence — an out-of-range/hallucinated
+    citation drops that specific claim rather than being silently kept.
+    Investment-advice language (buy/sell/hold/price-target patterns)
+    **must** fail the whole run closed via a hard pattern-based filter,
+    never a soft warning or a stripped-and-continue. A failed/unparseable
+    LLM call **must never** degrade into a placeholder finding (§7) — this
+    is a deliberate asymmetry with `retrieval_engine`'s v0.8 degrade-
+    gracefully pattern, not an oversight; a fabricated "finding" is worse
+    than an explicit error. Changing any of these needs a fresh explicit
+    conversation with the user first, the same as 1a/1b.
 2. **One shared `Base`, one Postgres database.** Never introduce a second
    declarative base or a second database/schema without explicit sign-off.
 3. **The provider/factory/DTO abstraction is not optional.** Business
@@ -1144,6 +1357,77 @@ deliberate conversation with the user first)
   item above and §12 item 2) — confirmed again during v0.8's own E2E
   pass, not a new gap.
 
+- **`ai_agents`'s `LLMProvider` (`OpenAIChatProvider`) was not
+  live-verified against the real OpenAI API** during v0.9's development —
+  the same gap `OpenAIEmbeddingProvider` had at v0.7, no `OPENAI_API_KEY`
+  in the sandbox. Unlike v0.7/v0.8 (where the untestable call was one leg
+  of a larger, still-mostly-verifiable pipeline), an unverified LLM call
+  here would have left the Fundamental Analyst's entire core function
+  unexercised — so v0.9's live E2E pass went further: the real
+  `FundamentalAnalystAgent`, real `RetrievalEngineService`, and real
+  Postgres data for TCS were run end-to-end with only the LLM HTTP call
+  itself swapped for a stub returning canned JSON. This confirmed, against
+  genuine evidence identities pulled from the real database: a
+  hallucinated citation index is correctly dropped (not silently kept),
+  a valid citation correctly resolves to a real evidence row's database
+  identity, the investment-advice-language filter correctly rejects a
+  response containing "Investors should buy this stock immediately," and
+  a response that doesn't match `LLMFundamentalOutput`'s schema is
+  correctly rejected with `LLMResponseParsingError`. What remains
+  genuinely unverified is only the actual OpenAI HTTP round trip itself
+  (request formatting, real response parsing, real model behavior/
+  quality) — covered by `test_llm_provider.py`'s mocked-response tests
+  only. The user explicitly chose, a second time (after the same choice
+  at v0.7/v0.8), to document this rather than supply a key. **Whoever
+  first configures a real `OPENAI_API_KEY` should do one live
+  `POST /agents/fundamental/{symbol}` pass against a company with real
+  financial statement data before fully trusting this path in
+  production** — this sandbox's TCS company has never had
+  `sync_company_financials` run against it (see the `retrieval_engine`
+  entry above), so even the "sufficient evidence" code path itself has
+  only ever been exercised against seeded test data, not real financials.
+- **The Fundamental Analyst's "insufficient evidence" short-circuit is,
+  as of this writing, the *only* code path this sandbox's real data can
+  exercise without any stubbing at all** — TCS has zero synced financial
+  statements (see above), so a real `POST /agents/fundamental/TCS` call
+  genuinely takes the no-LLM-call, deterministic-floor path in
+  production today, not just in tests. This was confirmed live during
+  v0.9's own E2E pass (§5/§11) and is not a bug — it is the correct,
+  intended behavior for a company with no fundamentals evidence — but it
+  means the "happy path" (real evidence, real LLM reasoning) has only
+  ever been exercised via seeded/stubbed data, never fully end-to-end
+  against this sandbox's actual persisted state.
+- **No numeric cross-check against `financials` data** — an LLM-stated
+  figure (e.g. "revenue grew 12%") is not compared against the actual
+  value already sitting in `FinancialRatio`/`ProfitAndLoss` rows.
+  Deliberately deferred out of v0.9's scope (§12 item 11,
+  `FUNDAMENTAL_ANALYST_DESIGN.md` §9 point 6) — the strongest single
+  hallucination guard proposed in that design doc, and flagged there as
+  the module's most consequential known gap at launch.
+- **No result caching for `ai_agents`** — every
+  `POST /agents/fundamental/{symbol}` re-runs the full pipeline including
+  the (paid) LLM call, even if the underlying evidence hasn't changed
+  since the last run. Unlike `KnowledgeEmbedding`'s `content_checksum`
+  guard (§4 point 5), `AgentFinding` has no equivalent skip mechanism yet
+  — see §12 item 12 for why this wasn't built without real cost data to
+  justify the design.
+- **`ai_agents`'s investment-advice-language filter is pattern-based, not
+  exhaustive** — a fixed set of word-boundary regexes
+  (`agents/fundamental/validation.py`'s `_ADVICE_PATTERNS`) catches the
+  common buy/sell/hold/price-target phrasings, but a sufficiently
+  differently-worded piece of advice language could in principle slip
+  through undetected. This is a known, accepted limitation of a
+  deterministic keyword approach (documented in
+  `FUNDAMENTAL_ANALYST_DESIGN.md` §9 as a defense-in-depth layer, not a
+  guaranteed-complete one) — not a bug to silently "fix" by expanding the
+  pattern list without discussing whether a more robust approach (e.g. a
+  second, narrowly-scoped classification pass) is warranted.
+- **Eight of the nine specialist agents named in `agents/base.py`'s
+  docstring remain unimplemented**, and `InvestmentCommitteeOrchestrator`
+  remains a 100% placeholder (`POST /reports` still always `501`s) — v0.9
+  built exactly one specialist agent end-to-end, not the whole
+  multi-agent system. See §12 item 1.
+
 ---
 
 ## 15. How a New Claude Conversation Should Continue This Project
@@ -1152,11 +1436,16 @@ deliberate conversation with the user first)
 2. **Do not redesign the architecture.** Every version so far has been
    built under an explicit "architecture is frozen, reuse every existing
    pattern exactly" constraint from the user, and it has held for
-   `v0.1` → `v0.8` without exception — including v0.7 and v0.8 themselves,
-   which each added a genuinely new capability (embeddings/vector search;
-   hybrid ranked retrieval) but did so *inside* the existing module shape
-   (§3) and every existing convention (§6–§10), not by inventing new
-   ones. Assume the same constraint applies until told otherwise.
+   `v0.1` → `v0.9` without exception — including v0.7, v0.8, and v0.9
+   themselves, which each added a genuinely new capability
+   (embeddings/vector search; hybrid ranked retrieval; the first real LLM
+   reasoning) but did so *inside* the existing module shape (§3) and every
+   existing convention (§6–§10), not by inventing new ones — v0.9 in
+   particular was implemented from a full technical design document
+   (`FUNDAMENTAL_ANALYST_DESIGN.md`) reviewed and confirmed with the user
+   before any code was written, the same "architecture review first"
+   rhythm point 3 below describes. Assume the same constraint applies
+   until told otherwise.
 3. **When asked to plan/review before building**, do exactly that — no
    code, no file writes — and end with a concrete proposal, not just
    options. This project's actual working rhythm has been:
@@ -1302,41 +1591,68 @@ Celery task exists for this module (§9)
 - `GET /portfolios`
 - `POST /portfolios`
 
-**`ai_agents`** (`/reports`) — placeholder only
-- `POST /reports` — always ends in a `501` `NotImplementedYetError` once
+**`ai_agents`** — two route groups, added incrementally
+- `POST /reports` — orchestrator job API, still placeholder-only: always
+  ends in a `501` `NotImplementedYetError` once
   `InvestmentCommitteeOrchestrator.request_analysis` runs; kept mounted so
   the route shape is already correct for when it's implemented.
+- `POST /agents/fundamental/{symbol}` — added v0.9. Runs the Fundamental
+  Analyst for a company: retrieves ranked evidence via
+  `RetrievalEngineService`, calls the LLM behind the `LLMProvider`
+  abstraction, validates/guards the structured output, persists the
+  result to `agent_findings`, and links it into the Research Dossier.
+  Standard `202` + `{symbol, status: "queued", task_id}` response,
+  following every other `.../generate/` route's convention — an LLM call
+  is slow and costs real money, exactly the profile that convention
+  exists for.
+- `GET /agents/fundamental/{symbol}` — added v0.9. Reads the most
+  recently persisted `AgentFinding` for that company (`404` if none
+  exists yet — the response message includes the exact `POST` to run).
+  `result_json` is the full `FundamentalAnalysisResult` payload
+  (summary, strengths, concerns, resolved citations, confidence score,
+  evidence sufficiency, caveats) passed through as-is.
 
 ---
 
-## 17. Version 0.9 — Specification Status
+## 17. Version 0.10 — Specification Status
 
-**No Version 0.9 specification has been given by the user as of this
+**No Version 0.10 specification has been given by the user as of this
 document's last update.** Do not infer one and do not start implementing
-anything under a "v0.9" label without first getting an explicit,
-detailed spec from the user, the same way v0.3 through v0.8 each began
+anything under a "v0.10" label without first getting an explicit,
+detailed spec from the user, the same way v0.3 through v0.9 each began
 with one (see §15 point 3 for the established rhythm: architecture review
 first, user confirms scope, then implement).
 
 §12 (Current Roadmap) lists the candidate next-step directions already
-identified from what v0.4 through v0.8 were each explicitly built to
-enable — the `ai_agents` / Investment Committee layer (now the most
-directly-enabled candidate of all: it has a purpose-built dependency,
-`retrieval_engine`, ready to consume — see §12 item 1), a real
-filings-discovery provider, a second news provider, real authentication,
-portfolio analytics, frontend wiring, raw document storage, a pgvector
-ANN index, auto-chaining knowledge generation, and revisiting
-`retrieval_engine`'s scoring formula — roughly in dependency order. These
-are **candidates the user has not yet chosen from or approved**, not a
-queued backlog to work through automatically. When a new conversation
-picks this up, the first step is asking the user which of these (or
-something else entirely) Version 0.9 should be, not assuming §12's
-ordering is a decision.
+identified from what v0.4 through v0.9 were each explicitly built to
+enable — more `ai_agents` specialist agents and/or the Investment
+Committee orchestrator itself (§12 item 1), a real filings-discovery
+provider, a second news provider, real authentication, portfolio
+analytics, frontend wiring, raw document storage, a pgvector ANN index,
+revisiting `retrieval_engine`'s scoring formula now that a real consumer
+exists, a numeric cross-check for the Fundamental Analyst, findings
+caching, and auto-chaining `generate_fundamental_analysis` — roughly in
+dependency order. These are **candidates the user has not yet chosen
+from or approved**, not a queued backlog to work through automatically.
+When a new conversation picks this up, the first step is asking the user
+which of these (or something else entirely) Version 0.10 should be, not
+assuming §12's ordering is a decision.
 
-If Version 0.9 turns out to be the `ai_agents` layer specifically: read
-§13 points 1, 1a, and 1b carefully first. v0.7 and v0.8 together only
-unlocked *retrieval* (embeddings, similarity search, hybrid ranking,
-context packaging); neither unlocked reasoning, and this document should
-not be read as having pre-approved any particular `ai_agents` design —
-that still needs its own explicit spec and its own architecture-review
-pass, the same as every version before it.
+If Version 0.10 turns out to be another `ai_agents` specialist agent:
+read `ai_agents/agents/fundamental/` in full first — it is the intended
+template (§12 item 1) — and read §13 points 1 and 1c carefully;
+`FundamentalAnalystAgent`'s guardrails (citation enforcement, the
+investment-advice filter, the two-part confidence score, the fail-closed-
+not-degrade-gracefully asymmetry with `retrieval_engine`) are frozen
+decisions for *that* agent, not necessarily the only valid design for a
+different agent's domain (e.g. a Technical Analyst's "is there enough
+evidence" question looks nothing like "is there a financial statement"),
+but the *pattern* of deterministic, non-LLM guardrails wrapping every LLM
+call should be treated as the house style going forward, not something
+each new agent reinvents from scratch. If Version 0.10 turns out to be
+the Investment Committee orchestrator itself: this document should not be
+read as having pre-approved any particular orchestrator design — conflict
+detection, weighted scoring, a Findings Store schema, and the
+synthesis/Compliance-Agent pass all remain fully unscoped (see §12 item 1
+and `FUNDAMENTAL_ANALYST_DESIGN.md` §13) and need their own explicit spec
+and architecture-review pass, the same as every version before it.

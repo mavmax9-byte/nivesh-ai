@@ -4,8 +4,16 @@ Per docs/v2 04-Multi-Agent-Research-System.md, every specialist agent
 (Market Data, Financial Analysis, Technical Analysis, Valuation, News
 Intelligence, Macro Economy, Risk Analysis, Portfolio Analysis, Compliance)
 implements this interface and writes its output to the Findings Store,
-never directly to another agent. No agent logic is implemented in this
-scaffold -- `run()` is a placeholder.
+never directly to another agent.
+
+`AgentFinding.detail` was added in v0.9 (additive, backward compatible --
+see FUNDAMENTAL_ANALYST_DESIGN.md §6/§12) so a concrete agent can carry
+its own richer structured result (e.g. `FundamentalAnalysisResult`,
+serialized) alongside the common summary/confidence/evidence_ids envelope
+every future agent and a future Investment Committee orchestrator can
+still rely on uniformly. `agents/fundamental/agent.py` is the first real
+implementation of this contract; every other agent named above remains
+unimplemented.
 """
 
 from abc import ABC, abstractmethod
@@ -30,6 +38,7 @@ class AgentFinding:
     summary: str
     confidence_score: float
     evidence_ids: list[str]
+    detail: dict[str, Any] | None = None
 
 
 class BaseAgent(ABC):
