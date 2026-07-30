@@ -5,7 +5,7 @@ conversation (or a new human engineer) should be able to read this file and
 continue development with zero loss of context. Written as an onboarding
 document for a Senior Staff Engineer joining the project.
 
-Last updated: after v0.7 (Knowledge Layer — Embeddings & Semantic Retrieval).
+Last updated: after v0.8 (Retrieval Engine).
 
 ---
 
@@ -62,10 +62,18 @@ Next.js (frontend, :3000)  →  FastAPI (backend, :8000, /api/v1)  →  PostgreS
   the resulting vectors in Postgres (`pgvector`) — this is the first
   embeddings/vector-DB usage in the codebase, but it is retrieval
   infrastructure only. It does not read, summarize, or reason about what
-  it retrieves; nothing outside `ai_agents` is allowed to do that. Every
-  other module's ingestion, normalization, validation, and categorization
-  remains fully deterministic (fixed lookup tables, regex/string
-  heuristics, arithmetic).
+  it retrieves; nothing outside `ai_agents` is allowed to do that. **v0.8**
+  added `retrieval_engine`, a second retrieval-only module: it combines
+  `knowledge_layer`'s semantic search with structured SQL fetches from
+  `financials`/`technical_intelligence`/`corporate_filings`/
+  `document_intelligence`/`news_intelligence`, deterministically scores,
+  deduplicates, and ranks the result, and packages it (plus a citation-
+  annotated text block) for a future consumer — but, exactly like
+  `knowledge_layer`, it never reasons about what it retrieves. It is the
+  intended single evidence-retrieval surface for `ai_agents` once that
+  layer is built (see §12). Every other module's ingestion, normalization,
+  validation, and categorization remains fully deterministic (fixed lookup
+  tables, regex/string heuristics, arithmetic).
 - No object/blob storage (S3, MinIO, etc.) anywhere in the stack. This was
   an explicit decision for v0.4 (extracted text goes into Postgres `Text`
   columns) and nothing in `config.py`/`docker-compose.yml` provides one.
@@ -114,6 +122,7 @@ nivesh-ai/
 │   │   ├── news_intelligence/   # v0.5: News Intelligence Engine
 │   │   ├── technical_intelligence/ # v0.6: Technical Intelligence Engine
 │   │   ├── knowledge_layer/     # v0.7: Knowledge Layer (embeddings & semantic retrieval)
+│   │   ├── retrieval_engine/    # v0.8: Retrieval Engine (hybrid evidence retrieval)
 │   │   ├── ai_agents/           # Investment Committee -- fully stubbed, no logic
 │   │   └── ingestion/tasks.py   # every Celery task, one shared file
 │   └── tests/                   # mirrors src/ 1:1 by domain, plus conftest.py
@@ -150,6 +159,17 @@ shape**:
 router shape but have no `providers/` (they aren't external-data ingesters
 themselves — `companies` is populated *by* `market_data`'s sync).
 
+`retrieval_engine` (v0.8) also has no `providers/` for the same reason,
+plus one further deviation: its `models.py` defines **no ORM class at
+all** — only shared string constants. It owns no database table (see §4)
+because it doesn't ingest or persist anything; it only reads evidence
+every other module already owns, ranks it, and returns it. Its
+`repository.py` is correspondingly unusual: instead of querying a table of
+its own, it composes the six sibling repositories (`financials`,
+`technical_intelligence`, `corporate_filings`, `document_intelligence`,
+`news_intelligence`, `knowledge_layer`) that already own the data it
+retrieves — see §6.
+
 ### Dependencies (`backend/pyproject.toml`)
 
 Runtime: `fastapi`, `uvicorn[standard]`, `sqlalchemy`, `alembic`, `asyncpg`,
@@ -179,6 +199,10 @@ applied in order, no branches:
 | `0006_news_intelligence` | `news_articles` |
 | `0007_technical_intelligence` | `technical_indicators` |
 | `0008_knowledge_layer` | `knowledge_embeddings` (also runs `CREATE EXTENSION IF NOT EXISTS vector`) |
+
+**v0.8 (Retrieval Engine) added no migration and no table** — `retrieval_engine`
+owns no persistent state (stateless by explicit user decision during v0.8
+planning; see §13 and §14), so the highest migration remains `0008`.
 
 **`0008_knowledge_layer` requires the Postgres `vector` extension
 (pgvector)** — the first migration in this project with an extension
@@ -326,21 +350,23 @@ hoc by application code.
   Postgres is unreachable, so the rest of the suite stays runnable without
   a DB — as of v0.7, this fixture also runs `CREATE EXTENSION IF NOT
   EXISTS vector` before `create_all`, since `KnowledgeEmbedding`'s column
-  type needs it (see §4). As of v0.7: **403 tests**, all passing with a
+  type needs it (see §4). As of v0.8: **438 tests**, all passing with a
   live Postgres that has the `vector` extension installed, Ruff and mypy
-  both clean across the whole `src/` tree. Every version from v0.3
-  through v0.7 has additionally passed a live end-to-end verification
-  pass (real FastAPI + Celery + Redis + Postgres stack, a real company
-  symbol, real upstream data) before being declared production-ready —
-  see §15 point 6; this has repeatedly caught real bugs unit tests alone
-  did not (§11's per-version entries list what was found each time).
-  **One exception in v0.7**: the live pass could not exercise the actual
-  OpenAI embeddings API call itself (no `OPENAI_API_KEY` was available in
-  the verification sandbox) — everything up to and including that call
-  boundary was verified live (task pipeline, DB writes, dossier
-  integration, clean error handling on a missing key); the call itself
-  was verified only via mocked HTTP responses in `test_openai_provider.py`.
-  See §14.
+  both clean across the whole `src/` tree. `retrieval_engine` has a
+  `test_repositories.py` despite owning no table of its own — it exercises
+  `RetrievalRepository`'s delegation to each sibling repository against
+  real seeded rows, including the document-section flattening logic (see
+  §6). Every version from v0.3 through v0.8 has additionally passed a live
+  end-to-end verification pass (real FastAPI + Celery + Redis + Postgres
+  stack, a real company symbol, real upstream data) before being declared
+  production-ready — see §15 point 6; this has repeatedly caught real bugs
+  unit tests alone did not (§11's per-version entries list what was found
+  each time). **One exception carried over from v0.7**: the live pass
+  still cannot exercise the actual OpenAI embeddings API call (no
+  `OPENAI_API_KEY` in the verification sandbox) — this now also means
+  `retrieval_engine`'s *semantic* leg couldn't be exercised live either,
+  only its structured SQL leg and its graceful degradation when the
+  semantic leg fails (which **was** verified live — see §14).
 
 ---
 
@@ -387,6 +413,21 @@ hoc by application code.
   for `document_intelligence`, and `ResearchDossierRepository` is
   depended on by `financials`, `corporate_filings`, and
   `document_intelligence` alike.
+- **`retrieval_engine`'s `RetrievalRepository` is a new repository shape**
+  (added v0.8): every method above assumes a repository queries its
+  *own* table. `RetrievalRepository` queries none — it owns no table (see
+  §3/§4) — and instead composes six sibling repositories
+  (`FinancialStatementRepository`, `TechnicalIndicatorRepository`,
+  `CorporateFilingRepository`, `DocumentExtractionRepository`,
+  `NewsArticleRepository`, `KnowledgeEmbeddingRepository`), each
+  constructed internally from the one `AsyncSession` it's given, and
+  exposes one thin read method per source that simply calls into the
+  matching sibling method. This still satisfies "cross-module reads go
+  through the owning module's repository" above — it just means *every*
+  read this particular repository makes is a cross-module read, since
+  aggregating already-owned evidence is this module's entire job. No
+  ranking/scoring logic lives here; that's `retrieval_engine/service.py`
+  and `normalization.py`'s job (§7).
 
 ---
 
@@ -424,6 +465,19 @@ hoc by application code.
   `ResearchDossierRepository` directly (constructor injection) — it never
   goes through `ResearchPipelineService`. Version *numbering* is the one
   thing no other module is allowed to touch (see §10, §13).
+- **`retrieval_engine/service.py` (v0.8) is the first read-only service**
+  in this codebase — no `validate → normalize → persist → link dossier`
+  flow, because there's nothing to persist (§4) or link (§10). Its
+  `retrieve_evidence`/`build_context_package`/`inspect_retrieval` methods
+  instead: fetch both retrieval legs, deduplicate/rank
+  (`normalization.deduplicate_and_rank`), and return. One convention it
+  *does* follow: a failing dependency degrades rather than crashes the
+  whole call — `_fetch_all` catches `EmbeddingProviderError` around the
+  semantic leg specifically, so a down/misconfigured embedding provider
+  never takes structured SQL evidence down with it (see §14). This is a
+  new pattern for this codebase (every other module either succeeds or
+  raises) worth reusing whenever a future service similarly combines an
+  external-dependency leg with an internal-only one.
 
 ---
 
@@ -503,6 +557,15 @@ hoc by application code.
     docstring for why). **Not live-verified against the real OpenAI API**
     during v0.7's end-to-end pass (no key was available in the
     verification sandbox) — see §5 and §14.
+  - `retrieval_engine` (v0.8) has **no `providers/` package at all** — it
+    doesn't call an external API of its own; it reuses `knowledge_layer`'s
+    already-existing `EmbeddingProvider` (via
+    `knowledge_layer.providers.factory.get_embedding_provider()`) to embed
+    a retrieval query, the same provider `knowledge_layer` uses to embed
+    source text, not a second implementation. This is a legitimate
+    provider-abstraction reuse across modules — `retrieval_engine`
+    depends on `knowledge_layer`'s public `EmbeddingProvider` interface,
+    never a concrete class — not a violation of point 3 in §13.
 
 ---
 
@@ -579,6 +642,9 @@ def do_the_work(self, arg: str) -> dict:
   `sync_company_market_data`, `sync_company_financials`,
   `sync_company_filings`, `extract_filing_document`, `sync_company_news`,
   `generate_technical_indicators`, `generate_knowledge_embeddings`.
+  **v0.8 (Retrieval Engine) added no Celery task** — it does no
+  background/ingestion work, only synchronous reads (see §7), so there
+  was nothing to queue.
 - Local dev worker command (Windows, since `--pool=prefork` doesn't work
   natively there): `celery -A nivesh.core.celery_app worker --loglevel=info
   --pool=solo --without-mingle --without-gossip --without-heartbeat` — the
@@ -677,9 +743,18 @@ driven purely by a market-data watermark comparison. No other module is
 ever allowed to create or bump a `ResearchVersion` — they only attach
 evidence to whatever version already exists, or skip if none does yet.
 
+**`retrieval_engine` (v0.8) deliberately does not integrate here** — no
+new `SOURCE_TYPE_*`, no `_link_to_research_dossier`. Every module before
+it that touched this seam was *creating* new evidence (a sync just wrote
+new rows); `retrieval_engine` only *reads* evidence every other module
+already linked when it was created. Recording "a retrieval call happened"
+as dossier evidence would conflate "this fact was established" (what
+`ResearchSource` means) with "this fact was looked up," which isn't the
+same claim — and would also cut against the stateless decision in §13/§14.
+
 ---
 
-## 11. Completed Versions (v0.1 – v0.7)
+## 11. Completed Versions (v0.1 – v0.8)
 
 | Version | Delivered | Key modules/tables |
 |---|---|---|
@@ -693,7 +768,9 @@ evidence to whatever version already exists, or skip if none does yet.
 | **v0.6 — Technical Intelligence Engine** | Deterministic technical indicators (16 series: SMA 20/50/100/200, EMA 20/50, RSI-14, MACD/Signal/Histogram, Bollinger Bands 20-2, ATR-14, OBV, Volume SMA-20) computed via pandas `rolling()`/`ewm()` from OHLCV bars `market_data` already persisted — no new external fetch (see §8's provider-pattern entry). `TechnicalIndicator` is this codebase's first entity-attribute-value table and its first upsert-only (never versioned) entity (see §4 point 4). **Recompute scope is a bounded trailing window** (300 bars), not full company history — an explicit user decision during v0.6 planning, made to keep generation cost independent of how long a company has been tracked; see §14 for the OBV carry-forward mechanism this required. Auto-triggered after every `sync_company_market_data` run. | `technical_indicators` |
 | **v0.7 — Knowledge Layer (Embeddings & Semantic Retrieval)** | The first embeddings/vector-search functionality in the codebase, added after an explicit user conversation amending the previously-absolute "no AI/embeddings/vector DB" rule (see §13, point 1) — scoped narrowly to retrieval infrastructure, no reasoning. Embeds already-persisted text from five source types (company profile, corporate filing metadata, Document Intelligence sections, news articles, Research Dossier version summaries — see `normalization.py` for the deterministic string templates and the honest note on why "corporate filing sections" is interpreted as filing metadata, since `corporate_filings` has no literal per-filing sections) via a real external embedding API (**OpenAI**, `text-embedding-3-small`, 1536 dimensions — chosen over a local `sentence-transformers` model specifically to avoid adding a heavy new ML dependency class to the project) and stores the vectors in Postgres via **pgvector** (chosen over a no-new-infra brute-force-cosine-in-Python approach — both were explicit user decisions during v0.7 planning, made via `AskUserQuestion` before any code was written, per the user's "pause and explain architecture-affecting options" instruction). `KnowledgeEmbedding` is this codebase's fifth persistence pattern and second entity-attribute-value table (see §4 point 5) — upserted, gated by a `content_checksum` guard that skips the (paid) embedding call entirely when a source row's text hasn't changed since the last run. No chunking (text is truncated to ~8000 characters, not split into multiple embeddings — a documented simplification, see §14); no vector index (ivfflat/hnsw) — pgvector's exact distance operators are used directly, scoped per-company via `WHERE company_id = ...`, which is correct and adequately fast at this stage's data volumes (see §14). Semantic search (`GET /knowledge/{symbol}/search`) is the one endpoint in this codebase that makes a live external API call inside a synchronous request (to embed the query text) rather than queuing Celery work — a deliberate, documented exception, not an inconsistency (a search query needs a fresh embedding to compare against; there's no "do it later" version of that). Generation is **not** auto-chained from any upstream sync (unlike `technical_intelligence`) — knowledge sources span four different upstream modules and each run can incur real API cost, so auto-wiring was deliberately left for a future, explicitly-discussed decision; today it's triggered only via `POST /knowledge/generate/{symbol}`. **Not live-verified against the real OpenAI API** during this version's E2E pass — no `OPENAI_API_KEY` was available in the verification sandbox, and the user explicitly chose to document this as a known limitation rather than supply one (see §5, §14); every other part of the pipeline (task dispatch, DB writes, dossier evidence linking, clean error handling on a missing key) was verified live against a real company (TCS). | `knowledge_embeddings` |
 
-**Test count as of v0.7: 403 passing** (`pytest`, real Postgres with the
+| **v0.8 — Retrieval Engine** | The single evidence-retrieval surface intended for future AI agents (`ai_agents`, still unimplemented) — strictly retrieval, ranking, and packaging, no LLM calls, no reasoning, no recommendations (per the v0.8 spec's own explicit boundary). Combines two legs: **semantic** (reuses `knowledge_layer`'s own `EmbeddingProvider` and `KnowledgeEmbeddingRepository`, not a second implementation — see §8) and **structured SQL** (direct fetches from `financials`, `technical_intelligence`, `corporate_filings`, `document_intelligence`, `news_intelligence` — latest/recent facts, no query-text filtering, since a SQL fetch by identity/recency isn't a similarity search). Both legs land on one comparable 0..1 `relevance_score`: semantic hits via cosine similarity, structured evidence via a **deterministic recency-decay** score (`RECENCY_HALF_LIFE_DAYS = 180`, one shared half-life across all structured types — a documented simplification, not empirically tuned). Deduplicates by `(source_type, source_id)` — reusing `knowledge_layer`'s own `SOURCE_TYPE_*` values for the five source types it can also find semantically means an item found via *both* legs (e.g. a news article that's both the most recent story and a semantic match) merges into one item recording both retrieval paths, keeping the higher score. `EVIDENCE_SOURCE_FINANCIAL_STATEMENT`/`EVIDENCE_SOURCE_TECHNICAL_INDICATOR` are the only two new source-type constants, since `knowledge_layer` explicitly never embeds either. A Context Builder (`normalization.build_context_package`) assembles ranked evidence plus a deterministic, citation-annotated plain-text block (`context_text`) suitable as an LLM prompt's evidence section — formatting, not reasoning. **Stateless by explicit user decision during v0.8 planning** (`AskUserQuestion`, before any code was written): no retrieval call is persisted, no new table, no migration (see §4); `GET /retrieval/{symbol}/inspect` gives visibility into a *live* call's per-source fetch counts and pre/post-dedup totals instead. **The semantic leg degrades gracefully** — `EmbeddingProviderError` (e.g. missing `OPENAI_API_KEY`) is caught around just that leg, logged, and treated as zero semantic hits rather than failing the whole request; structured SQL evidence, which needs no external API, is unaffected. This was found and fixed during v0.8's own build (an initial version let a semantic-leg failure take down the entire retrieval call) — before any live E2E pass was run, and reflected in the test suite (`test_retrieve_evidence_degrades_gracefully_when_semantic_leg_fails`). Verified live against real TCS data: structured retrieval, context package assembly, and semantic-leg graceful degradation all confirmed working end-to-end; the semantic leg's actual hit-quality could not be live-verified for the same reason as v0.7 (no `OPENAI_API_KEY` in the sandbox) — see §14. | *(none — stateless, no migration)* |
+
+**Test count as of v0.8: 438 passing** (`pytest`, real Postgres with the
 `vector` extension installed). Ruff and mypy both clean across the whole
 `src/` tree.
 
@@ -701,23 +778,25 @@ Commits (chronological, all on `main`):
 `6d5e038` init → `9c8ff36` gitignore → `f616f25` Sprint 4 → `fe5a0e4` ruff
 fixes → `d308b17` mypy fixes → `53b1e66` feat(v0.3) corporate filings →
 `d3f691c` feat(v0.4) document intelligence → `ae47f82` feat(v0.5) news
-intelligence → `084870c` feat(v0.6) technical intelligence → (v0.7
-knowledge layer, see git log for the current hash).
+intelligence → `084870c` feat(v0.6) technical intelligence → `9b0b621`
+feat(v0.7) knowledge layer → (v0.8 retrieval engine, see git log for the
+current hash).
 
 ---
 
-## 12. Current Roadmap (v0.8 onwards)
+## 12. Current Roadmap (v0.9 onwards)
 
-Nothing beyond v0.7 has been scoped or approved yet. Do not start
-implementing v0.8 without an explicit spec from the user — this project's
+Nothing beyond v0.8 has been scoped or approved yet. Do not start
+implementing v0.9 without an explicit spec from the user — this project's
 working pattern has consistently been: architecture review first (no code)
 → user confirms scope → implement → self-review → verify → commit/push.
-See §17 for the current v0.8 spec status.
+See §17 for the current v0.9 spec status.
 
-**What v0.4 through v0.7 were explicitly building toward**: document
-extractions, news articles, technical indicators, and now a semantic
-retrieval index over all of it exist so a *future* version can consume
-them. Natural, foreshadowed next steps, roughly in dependency order:
+**What v0.4 through v0.8 were explicitly building toward**: document
+extractions, news articles, technical indicators, a semantic retrieval
+index, and now a hybrid ranked-evidence retrieval surface over all of it
+exist so a *future* version can consume them. Natural, foreshadowed next
+steps, roughly in dependency order:
 
 1. **The `ai_agents` / Investment Committee layer** — currently 100%
    placeholder (`InvestmentCommitteeOrchestrator.request_analysis` always
@@ -725,27 +804,30 @@ them. Natural, foreshadowed next steps, roughly in dependency order:
    `AgentFinding` define a contract with no implementations). This is
    where AI/LLM *reasoning* is supposed to live, per the external
    architecture docs' "Findings Store" / "Knowledge Layer" / "Evidence
-   Graph" concepts. `knowledge_layer` (v0.7) is the retrieval foundation
-   this layer would consume (a RAG-style agent could call
-   `KnowledgeLayerService.search` to ground its answers in real, cited
-   platform data) — this is now the most directly-enabled next step of
-   anything on this list, more so than before v0.7 existed. Building it
+   Graph" concepts. `retrieval_engine` (v0.8) is now the direct,
+   purpose-built dependency this layer would consume — an agent would
+   call `RetrievalEngineService.build_context_package` (or
+   `GET /retrieval/{symbol}/context`) to get ranked, cited evidence to
+   reason over, rather than assembling that itself. This is the most
+   directly-enabled next step of anything on this list; v0.8 was
+   explicitly built to be exactly this dependency. Building `ai_agents`
    is still a materially different kind of work (the first version to
-   actually do AI *reasoning*, as opposed to v0.7's retrieval-only scope)
-   and should not be started casually. News sentiment analysis / AI
-   summarization of articles, and any trading strategy/signal/forecasting
-   logic built on top of `technical_intelligence`'s indicator values,
-   both belong here, not in `news_intelligence` or
+   actually do AI *reasoning*, as opposed to v0.7/v0.8's retrieval-only
+   scope) and should not be started casually. News sentiment analysis /
+   AI summarization of articles, and any trading strategy/signal/
+   forecasting logic built on top of `technical_intelligence`'s indicator
+   values, both belong here, not in `news_intelligence` or
    `technical_intelligence` themselves — explicitly out of scope for
    those versions per the user's instructions each time.
 2. **A real filings-discovery provider** for `corporate_filings` (NSE/BSE
    announcements API or a commercial vendor) that supplies genuine
    document deep-links — this would make `document_intelligence`'s PDF
-   path the common case instead of the fallback (and, downstream,
-   `knowledge_layer`'s `document_section` embeddings would actually
-   populate for real companies in this sandbox — see §14), with zero
-   changes needed to `document_intelligence` itself (the whole point of
-   the provider abstraction).
+   path the common case instead of the fallback (and, downstream, both
+   `knowledge_layer`'s `document_section` embeddings and
+   `retrieval_engine`'s `document_section` structured evidence would
+   actually populate for real companies in this sandbox — see §14), with
+   zero changes needed to `document_intelligence` itself (the whole point
+   of the provider abstraction).
 3. **A second real news provider** for `news_intelligence` (Reuters,
    Economic Times, Moneycontrol, Google News, etc.) — needed before true
    cross-provider duplicate-article identity resolution can be designed
@@ -770,6 +852,14 @@ them. Natural, foreshadowed next steps, roughly in dependency order:
    resulting OpenAI API cost profile has been explicitly discussed with
    the user (see §9's v0.7 entry for why this was deliberately deferred
    rather than assumed).
+10. **Revisiting `retrieval_engine`'s scoring formula** — the single
+    shared `RECENCY_HALF_LIFE_DAYS = 180` and the plain
+    `1 - cosine_distance` semantic score are deliberate, simple choices
+    for a foundational version, not empirically validated against real
+    retrieval quality (see §13/§14). Once `ai_agents` (item 1) is
+    consuming this module's output for real, that's the point to revisit
+    tuning — not before, since there's no real usage signal to tune
+    against yet.
 
 ---
 
@@ -777,25 +867,29 @@ them. Natural, foreshadowed next steps, roughly in dependency order:
 deliberate conversation with the user first)
 
 1. **Determinism until `ai_agents` is explicitly greenlit — narrowly
-   amended by v0.7.** No AI *reasoning* (no LLM calls, no summarization,
-   no report generation, no recommendations, no sentiment analysis, no
-   knowledge graph) anywhere outside `ai_agents`. This was an absolute
-   constraint (also covering embeddings/vector search) through v0.1–v0.6,
-   restated explicitly by the user for v0.4, v0.5, and v0.6 (v0.5's
-   restatement specifically named AI summarization, sentiment analysis,
-   and semantic search as excluded from `news_intelligence`; v0.6's
-   specifically named trading strategies, buy/sell signals, forecasting,
-   and ML models as excluded from `technical_intelligence`). **v0.7
-   (Knowledge Layer) is a deliberate, narrow exception to the
-   embeddings/vector-search half of this rule**, made only after an
-   explicit user conversation (the v0.7 spec itself named it: "This
-   version introduces embeddings and vector search only... must not
-   introduce AI reasoning, report generation, or investment
-   recommendations"). `knowledge_layer` may embed text and run vector
-   similarity search; it may **not** read, summarize, or reason about
-   what it retrieves — that line still belongs exclusively to `ai_agents`,
-   unchanged. Do not read v0.7's existence as a general license to add AI
-   elsewhere; it is one narrowly-scoped module, not a precedent.
+   amended by v0.7 and v0.8.** No AI *reasoning* (no LLM calls, no
+   summarization, no report generation, no recommendations, no sentiment
+   analysis, no knowledge graph) anywhere outside `ai_agents`. This was an
+   absolute constraint (also covering embeddings/vector search/evidence
+   ranking) through v0.1–v0.6, restated explicitly by the user for v0.4,
+   v0.5, and v0.6 (v0.5's restatement specifically named AI summarization,
+   sentiment analysis, and semantic search as excluded from
+   `news_intelligence`; v0.6's specifically named trading strategies,
+   buy/sell signals, forecasting, and ML models as excluded from
+   `technical_intelligence`). **v0.7 (Knowledge Layer) and v0.8 (Retrieval
+   Engine) are deliberate, narrow exceptions to the embeddings/vector-
+   search/ranking half of this rule**, each made only after an explicit
+   user conversation (the v0.7 spec named it: "This version introduces
+   embeddings and vector search only... must not introduce AI reasoning,
+   report generation, or investment recommendations"; the v0.8 spec named
+   it: "This sprint must not invoke an LLM or generate analysis. It only
+   prepares high-quality evidence for future AI agents"). `knowledge_layer`
+   may embed text and run vector similarity search; `retrieval_engine` may
+   combine, score, deduplicate, rank, and package that evidence. Neither
+   may **read, summarize, or reason about** what it retrieves — that line
+   still belongs exclusively to `ai_agents`, unchanged. Do not read v0.7's
+   or v0.8's existence as a general license to add AI elsewhere; each is
+   one narrowly-scoped module, not a precedent.
 1a. **v0.7's specific embeddings/vector-search decisions are themselves
     frozen** (each was an explicit `AskUserQuestion` decision during v0.7
     planning, not a default): embedding provider is **OpenAI**
@@ -810,6 +904,19 @@ deliberate conversation with the user first)
     of these is exactly the kind of "architecture-affecting decision" that
     needs a fresh explicit conversation with the user first, not a
     unilateral change during a later version.
+1b. **v0.8's specific retrieval decisions are themselves frozen**:
+    `retrieval_engine` is **stateless** — no retrieval call is persisted,
+    no new table, no migration (an explicit `AskUserQuestion` decision
+    during v0.8 planning, chosen over a `RetrievalRun` audit-log table).
+    Scoring is deterministic only: semantic hits via cosine similarity,
+    structured evidence via a single shared recency half-life
+    (`RECENCY_HALF_LIFE_DAYS = 180`) — not a learned ranking model, not
+    per-type tuning. Deduplication key is `(source_type, source_id)`,
+    reusing `knowledge_layer`'s own `SOURCE_TYPE_*` values where they
+    overlap (§10). The semantic leg degrades gracefully on
+    `EmbeddingProviderError` rather than failing the whole request (§7).
+    Changing any of these needs a fresh explicit conversation with the
+    user first, the same as 1a.
 2. **One shared `Base`, one Postgres database.** Never introduce a second
    declarative base or a second database/schema without explicit sign-off.
 3. **The provider/factory/DTO abstraction is not optional.** Business
@@ -998,6 +1105,45 @@ deliberate conversation with the user first)
   an application constraint (`docker-compose.yml`'s
   `pgvector/pgvector:pg16` image doesn't have this problem).
 
+- **`retrieval_engine`'s semantic leg was not live-verified against the
+  real OpenAI API** for the same reason as `knowledge_layer`'s (§5/§14
+  above) — no `OPENAI_API_KEY` in the verification sandbox. What *was*
+  verified live against real TCS data: structured SQL retrieval across
+  all five structured source types, the Context Builder's citation-
+  annotated `context_text` output, `GET /retrieval/{symbol}/inspect`'s
+  per-source fetch counts, and — specifically — graceful degradation of
+  the semantic leg (confirmed live: a request with no API key configured
+  returned full structured evidence with zero `"semantic"` items, rather
+  than failing). Semantic-hit quality and cross-leg deduplication (an
+  item found via both legs merging into one) were verified only via
+  mocked/unit tests (`test_service.py`), not live.
+- **`retrieval_engine`'s recency scoring means older-but-authoritative
+  evidence can be crowded out by a `limit`-bounded result set of fresher
+  but less significant items** — observed during v0.8's live pass: a
+  10-item request for TCS returned the technical snapshot and 9 recent
+  news articles, with none of the company's 10 fetched corporate filings
+  making the cut (they were fetched correctly, per
+  `GET /retrieval/{symbol}/inspect`, just outscored on recency). This is
+  the expected, working behavior of a pure recency-based structured
+  score (§13 point 1b) — not a bug — but is worth knowing before assuming
+  a small `limit` always surfaces a *representative* cross-section of
+  evidence types; a caller that needs guaranteed per-type coverage should
+  request a larger `limit` or call `GET /retrieval/{symbol}/inspect` to
+  see everything fetched before ranking.
+- **`retrieval_engine`'s `financial_statement` evidence type was not
+  exercised live** — no company in the verification sandbox has synced
+  financial statements (`sync_company_financials` was never triggered for
+  TCS in any session's E2E pass so far), so `get_financial_statements`
+  correctly returned zero rows live; the code path is covered only by
+  `test_service.py`/`test_repositories.py`'s mocked/seeded tests. Not a
+  v0.8 regression — financials sync for TCS has simply never been run in
+  this sandbox.
+- **`document_section` evidence is empty in this sandbox for the same
+  pre-existing NSE-blocking reason `knowledge_layer`'s own
+  `document_section` embeddings are** (see the `document_intelligence`
+  item above and §12 item 2) — confirmed again during v0.8's own E2E
+  pass, not a new gap.
+
 ---
 
 ## 15. How a New Claude Conversation Should Continue This Project
@@ -1006,11 +1152,11 @@ deliberate conversation with the user first)
 2. **Do not redesign the architecture.** Every version so far has been
    built under an explicit "architecture is frozen, reuse every existing
    pattern exactly" constraint from the user, and it has held for
-   `v0.1` → `v0.7` without exception — including v0.7 itself, which added
-   a genuinely new capability (embeddings/vector search) but did so
-   *inside* the existing module shape (§3) and every existing convention
-   (§6–§10), not by inventing new ones. Assume the same constraint applies
-   until told otherwise.
+   `v0.1` → `v0.8` without exception — including v0.7 and v0.8 themselves,
+   which each added a genuinely new capability (embeddings/vector search;
+   hybrid ranked retrieval) but did so *inside* the existing module shape
+   (§3) and every existing convention (§6–§10), not by inventing new
+   ones. Assume the same constraint applies until told otherwise.
 3. **When asked to plan/review before building**, do exactly that — no
    code, no file writes — and end with a concrete proposal, not just
    options. This project's actual working rhythm has been:
@@ -1117,13 +1263,32 @@ inline.
   `content_text`, `embedding_model`), newest-updated first. The raw
   vector itself is never returned over REST.
 - `GET /knowledge/{symbol}/search?query=&limit=` — semantic similarity
-  search scoped to one company. **The one exception to this section's
-  opening rule**: this is a `GET`, not a `.../sync/` or `.../generate/`
-  route, and it makes a live external embedding API call inline (to embed
-  `query`) rather than queuing Celery work — a search query needs a fresh
-  embedding to compare against; there's no "do it later" version of that.
-  Returns cosine similarity scores (1 = identical direction, not a
-  percentage).
+  search scoped to one company. This is a `GET`, not a `.../sync/` or
+  `.../generate/` route, and it makes a live external embedding API call
+  inline (to embed `query`) rather than queuing Celery work — a search
+  query needs a fresh embedding to compare against; there's no "do it
+  later" version of that. Returns cosine similarity scores (1 = identical
+  direction, not a percentage). `retrieval_engine`'s endpoints below make
+  the same kind of live call for the same reason.
+
+**`retrieval_engine`** (`/retrieval`) — added v0.8; read-only, no
+Celery task exists for this module (§9)
+- `GET /retrieval/{symbol}/evidence?query=&limit=` — hybrid ranked
+  evidence: semantic hits (via `knowledge_layer`) plus structured SQL
+  facts (financials, technical indicators, filings, document sections,
+  news), deduplicated and scored onto one 0..1 `relevance_score` scale.
+  `query` is required — see §7 for why. Degrades gracefully to
+  structured-only results if the embedding provider fails (§7/§14).
+- `GET /retrieval/{symbol}/context?query=&limit=` — the same evidence
+  wrapped in a `ContextPackage`: adds `generated_at` and a deterministic,
+  citation-annotated `context_text` block suitable as an LLM prompt's
+  evidence section (built by formatting already-scored evidence, not by
+  summarizing it).
+- `GET /retrieval/{symbol}/inspect?query=&limit=` — diagnostics for a
+  *live* retrieval call: per-source-type fetch counts before dedup,
+  total fetched, total after dedup, total returned. Exists in place of a
+  persisted retrieval history (§13 point 1b) — there is nothing to look
+  back on, only a live call to inspect.
 
 **`research`** (`/research`) — read-only; never triggers a sync itself
 - `GET /research/{symbol}` — dossier overview: latest version + snapshot,
@@ -1144,31 +1309,34 @@ inline.
 
 ---
 
-## 17. Version 0.8 — Specification Status
+## 17. Version 0.9 — Specification Status
 
-**No Version 0.8 specification has been given by the user as of this
+**No Version 0.9 specification has been given by the user as of this
 document's last update.** Do not infer one and do not start implementing
-anything under a "v0.8" label without first getting an explicit,
-detailed spec from the user, the same way v0.3 through v0.7 each began
+anything under a "v0.9" label without first getting an explicit,
+detailed spec from the user, the same way v0.3 through v0.8 each began
 with one (see §15 point 3 for the established rhythm: architecture review
 first, user confirms scope, then implement).
 
 §12 (Current Roadmap) lists the candidate next-step directions already
-identified from what v0.4 through v0.7 were each explicitly built to
+identified from what v0.4 through v0.8 were each explicitly built to
 enable — the `ai_agents` / Investment Committee layer (now the most
-directly-enabled candidate, since it can consume `knowledge_layer`'s
-retrieval — see §12 item 1), a real filings-discovery provider, a second
-news provider, real authentication, portfolio analytics, frontend wiring,
-raw document storage, a pgvector ANN index, and auto-chaining knowledge
-generation — roughly in dependency order. These are **candidates the user
-has not yet chosen from or approved**, not a queued backlog to work
-through automatically. When a new conversation picks this up, the first
-step is asking the user which of these (or something else entirely)
-Version 0.8 should be, not assuming §12's ordering is a decision.
+directly-enabled candidate of all: it has a purpose-built dependency,
+`retrieval_engine`, ready to consume — see §12 item 1), a real
+filings-discovery provider, a second news provider, real authentication,
+portfolio analytics, frontend wiring, raw document storage, a pgvector
+ANN index, auto-chaining knowledge generation, and revisiting
+`retrieval_engine`'s scoring formula — roughly in dependency order. These
+are **candidates the user has not yet chosen from or approved**, not a
+queued backlog to work through automatically. When a new conversation
+picks this up, the first step is asking the user which of these (or
+something else entirely) Version 0.9 should be, not assuming §12's
+ordering is a decision.
 
-If Version 0.8 turns out to be the `ai_agents` layer specifically: read
-§13 point 1 and 1a carefully first. v0.7 only unlocked *retrieval*
-(embeddings + similarity search); it did not unlock reasoning, and this
-document should not be read as having pre-approved any particular
-`ai_agents` design — that still needs its own explicit spec and its own
-architecture-review pass, the same as every version before it.
+If Version 0.9 turns out to be the `ai_agents` layer specifically: read
+§13 points 1, 1a, and 1b carefully first. v0.7 and v0.8 together only
+unlocked *retrieval* (embeddings, similarity search, hybrid ranking,
+context packaging); neither unlocked reasoning, and this document should
+not be read as having pre-approved any particular `ai_agents` design —
+that still needs its own explicit spec and its own architecture-review
+pass, the same as every version before it.
