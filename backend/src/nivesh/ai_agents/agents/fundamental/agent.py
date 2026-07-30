@@ -26,6 +26,16 @@ fabricated output, which ai_agents' own docstring (orchestrator.py) already
 rules out. LLMProviderError/LLMResponseParsingError simply propagate to
 the Celery task layer, which retries like any other failure (see
 ingestion/tasks.py).
+
+`shared_evidence` (v1.0, INVESTMENT_COMMITTEE_DESIGN.md §3): an additive,
+optional constructor parameter used only when the Investment Committee
+orchestrator runs this agent as part of a committee, so the whole committee
+performs exactly one Retrieval Engine call instead of one per specialist.
+When `None` (the default), `run()` fetches its own evidence exactly as it
+did in v0.9 -- every standalone invocation (`POST /agents/fundamental/
+{symbol}`, every v0.9 test) is completely unaffected. When set, `run()`
+filters the already-fetched shared pool by RELEVANT_EVIDENCE_TYPES instead
+of calling retrieval_engine itself.
 """
 
 import logging
@@ -50,9 +60,11 @@ from nivesh.ai_agents.agents.fundamental.schemas import (
 )
 from nivesh.ai_agents.agents.fundamental.validation import (
     EVIDENCE_CONFIDENCE_FLOOR,
+    compute_evidence_confidence,
+)
+from nivesh.ai_agents.guardrails import (
     check_no_investment_advice,
     compute_confidence_score,
-    compute_evidence_confidence,
     drop_unsupported_assessments,
     resolve_citation_refs,
 )
@@ -84,10 +96,12 @@ class FundamentalAnalystAgent(BaseAgent):
         retrieval_service: RetrievalEngineService,
         llm_provider: LLMProvider,
         company_repository: CompanyRepository,
+        shared_evidence: list[EvidenceItem] | None = None,
     ) -> None:
         self._retrieval = retrieval_service
         self._llm = llm_provider
         self._companies = company_repository
+        self._shared_evidence = shared_evidence
 
     async def run(self, context: AgentContext) -> AgentFinding:
         company = await self._companies.get_by_id(uuid.UUID(context.company_id))
@@ -95,12 +109,14 @@ class FundamentalAnalystAgent(BaseAgent):
             raise NotFoundError(f"No company found with id '{context.company_id}'")
         symbol = company.symbol
 
-        package = await self._retrieval.build_context_package(
-            symbol, FUNDAMENTAL_ANALYSIS_QUERY, limit=EVIDENCE_LIMIT
-        )
-        evidence = [
-            item for item in package.evidence if item.source_type in RELEVANT_EVIDENCE_TYPES
-        ]
+        if self._shared_evidence is None:
+            package = await self._retrieval.build_context_package(
+                symbol, FUNDAMENTAL_ANALYSIS_QUERY, limit=EVIDENCE_LIMIT
+            )
+            pool = list(package.evidence)
+        else:
+            pool = self._shared_evidence
+        evidence = [item for item in pool if item.source_type in RELEVANT_EVIDENCE_TYPES]
 
         evidence_confidence = compute_evidence_confidence(evidence)
         if evidence_confidence <= EVIDENCE_CONFIDENCE_FLOOR:

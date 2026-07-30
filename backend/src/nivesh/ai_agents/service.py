@@ -20,14 +20,33 @@ range-based row), one agent run produces exactly one finding, so a
 discrete, one-row-per-item reference (the same shape
 corporate_filings/document_intelligence/news_intelligence use) is the
 correct fit here, not an aggregate range.
+
+`persist_finding` (v1.0) factors the persist-and-link half of
+`run_analysis` out into its own public method, reused by the Investment
+Committee orchestrator for the Committee Chair's and Compliance's own
+findings -- neither is produced by a `BaseAgent.run()` call (per
+INVESTMENT_COMMITTEE_DESIGN.md §6, neither is a `BaseAgent`), but both are
+wrapped into the exact same generic `agents.base.AgentFinding` shape every
+specialist already returns, so they persist identically once built. `agent`
+is optional for exactly this "persist-only" use: the orchestrator
+instantiates this service once per committee run without a concrete
+specialist agent behind it, and only ever calls `persist_finding` on that
+instance, never `run_analysis`.
+
+`persist_finding` takes `link_to_dossier` (default `True`) because not
+every persisted finding should become its own Research Dossier evidence
+row: §10 is explicit that "the Chair's run adds exactly one more [evidence
+row], on top" of each specialist's own -- Compliance's verdict is an audit
+record of the *review*, not a new piece of evidence about the company, so
+the orchestrator passes `link_to_dossier=False` for it.
 """
 
 import logging
 import uuid
 from dataclasses import dataclass
 
-from nivesh.ai_agents.agents.base import AgentContext, BaseAgent
-from nivesh.ai_agents.models import AgentFinding
+from nivesh.ai_agents.agents.base import AgentContext, AgentFinding, BaseAgent
+from nivesh.ai_agents.models import AgentFinding as AgentFindingRow
 from nivesh.ai_agents.repository import AgentFindingRepository
 from nivesh.companies.repository import CompanyRepository
 from nivesh.core.exceptions import NotFoundError
@@ -52,7 +71,7 @@ class AgentAnalysisResult:
 class AIAgentsService:
     def __init__(
         self,
-        agent: BaseAgent,
+        agent: BaseAgent | None,
         company_repository: CompanyRepository,
         finding_repository: AgentFindingRepository,
         dossier_repository: ResearchDossierRepository,
@@ -63,16 +82,58 @@ class AIAgentsService:
         self._dossiers = dossier_repository
 
     async def run_analysis(self, symbol: str) -> AgentAnalysisResult:
+        if self._agent is None:
+            raise NotImplementedError(
+                "run_analysis requires a concrete agent; this service instance was constructed "
+                "in persist-only mode -- use persist_finding instead."
+            )
         company = await self._companies.get_by_symbol(symbol)
         if company is None:
             raise NotFoundError(f"No company found with symbol '{symbol}'")
 
         context = AgentContext(company_id=str(company.id), trigger_type="manual")
         finding = await self._agent.run(context)
-        detail = finding.detail or {}
+        return await self._persist(company.id, company.symbol, finding, link_to_dossier=True)
 
+    async def persist_finding(
+        self, symbol: str, finding: AgentFinding, *, link_to_dossier: bool = True
+    ) -> AgentAnalysisResult:
+        """Persists an already-produced `AgentFinding` and, by default,
+        links it into the Research Dossier -- the second half of
+        `run_analysis`, factored out for the Investment Committee
+        orchestrator's Chair/Compliance findings (see module docstring for
+        why Compliance passes `link_to_dossier=False`)."""
+        company = await self._companies.get_by_symbol(symbol)
+        if company is None:
+            raise NotFoundError(f"No company found with symbol '{symbol}'")
+        return await self._persist(
+            company.id, company.symbol, finding, link_to_dossier=link_to_dossier
+        )
+
+    async def get_latest_finding(self, symbol: str) -> AgentFindingRow | None:
+        if self._agent is None:
+            raise NotImplementedError(
+                "get_latest_finding requires a concrete agent; this service instance was "
+                "constructed in persist-only mode."
+            )
+        company = await self._companies.get_by_symbol(symbol)
+        if company is None:
+            raise NotFoundError(f"No company found with symbol '{symbol}'")
+        return await self._findings.get_latest(company.id, self._agent.agent_code)
+
+    # -- internals -----------------------------------------------------
+
+    async def _persist(
+        self,
+        company_id: uuid.UUID,
+        symbol: str,
+        finding: AgentFinding,
+        *,
+        link_to_dossier: bool,
+    ) -> AgentAnalysisResult:
+        detail = finding.detail or {}
         await self._findings.upsert(
-            company_id=company.id,
+            company_id=company_id,
             agent_code=finding.agent_code,
             result_json=detail,
             prompt_version=detail.get("prompt_version", ""),
@@ -80,23 +141,16 @@ class AIAgentsService:
             confidence_score=finding.confidence_score,
             evidence_sufficiency=detail.get("evidence_sufficiency", "insufficient"),
         )
-        await self._link_to_research_dossier(company.id, company.symbol, finding.agent_code)
+        if link_to_dossier:
+            await self._link_to_research_dossier(company_id, symbol, finding.agent_code)
 
         return AgentAnalysisResult(
-            company_id=company.id,
-            symbol=company.symbol,
+            company_id=company_id,
+            symbol=symbol,
             agent_code=finding.agent_code,
             confidence_score=finding.confidence_score,
             evidence_sufficiency=detail.get("evidence_sufficiency", "insufficient"),
         )
-
-    async def get_latest_finding(self, symbol: str) -> AgentFinding | None:
-        company = await self._companies.get_by_symbol(symbol)
-        if company is None:
-            raise NotFoundError(f"No company found with symbol '{symbol}'")
-        return await self._findings.get_latest(company.id, self._agent.agent_code)
-
-    # -- internals -----------------------------------------------------
 
     async def _link_to_research_dossier(
         self, company_id: uuid.UUID, symbol: str, agent_code: str

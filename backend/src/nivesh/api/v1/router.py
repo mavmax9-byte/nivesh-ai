@@ -3,7 +3,11 @@
 from fastapi import APIRouter
 
 from nivesh.ai_agents.router import fundamental_router as ai_agents_fundamental_router
+from nivesh.ai_agents.router import news_sentiment_router as ai_agents_news_sentiment_router
+from nivesh.ai_agents.router import risk_router as ai_agents_risk_router
 from nivesh.ai_agents.router import router as ai_agents_router
+from nivesh.ai_agents.router import technical_router as ai_agents_technical_router
+from nivesh.ai_agents.router import valuation_router as ai_agents_valuation_router
 from nivesh.api.v1.health import router as health_router
 from nivesh.api.v1.version import router as version_router
 from nivesh.companies.router import router as companies_router
@@ -35,3 +39,7 @@ api_v1_router.include_router(research_router)
 api_v1_router.include_router(retrieval_engine_router)
 api_v1_router.include_router(ai_agents_router)
 api_v1_router.include_router(ai_agents_fundamental_router)
+api_v1_router.include_router(ai_agents_technical_router)
+api_v1_router.include_router(ai_agents_valuation_router)
+api_v1_router.include_router(ai_agents_news_sentiment_router)
+api_v1_router.include_router(ai_agents_risk_router)

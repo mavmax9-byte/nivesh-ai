@@ -24,6 +24,17 @@ persist its own richer shape without a schema change here -- the same
 `SourceType` catalog already follows. `confidence_score` and
 `evidence_sufficiency` are denormalized out of `result_json` onto their
 own columns purely so they're queryable/filterable without parsing JSON.
+
+v1.0 (Investment Committee) confirms this promise holds exactly as
+anticipated: four new specialists, the Committee Chair's own synthesized
+decision (`agent_code="investment_committee"`), and Compliance's verdict
+(`agent_code="compliance_review"`) all get their own upserted row here --
+zero schema changes, zero new tables (INVESTMENT_COMMITTEE_DESIGN.md §10).
+`investment_committee`'s `result_json` additionally carries a
+`source_findings` manifest (one entry per specialist actually synthesized)
+so a committee decision stays traceable back to the exact specialist
+findings it was built from, even though `agent_findings` itself is
+upsert-only and a specialist's row can be overwritten by a later run.
 """
 
 import uuid
@@ -36,8 +47,29 @@ from sqlalchemy.orm import Mapped, mapped_column
 from nivesh.core.db import Base
 
 AGENT_CODE_FUNDAMENTAL_ANALYST = "fundamental_analyst"
+AGENT_CODE_TECHNICAL_ANALYST = "technical_analyst"
+AGENT_CODE_VALUATION_ANALYST = "valuation_analyst"
+AGENT_CODE_NEWS_SENTIMENT_ANALYST = "news_sentiment_analyst"
+AGENT_CODE_RISK_ANALYST = "risk_analyst"
+AGENT_CODE_INVESTMENT_COMMITTEE = "investment_committee"
+AGENT_CODE_COMPLIANCE_REVIEW = "compliance_review"
 
-VALID_AGENT_CODES = {AGENT_CODE_FUNDAMENTAL_ANALYST}
+# The five specialist agent codes, in the order the committee runs them
+# (INVESTMENT_COMMITTEE_DESIGN.md §9's Celery orchestration step 2) --
+# Fundamental first since it is the one mandatory quorum specialist.
+SPECIALIST_AGENT_CODES = (
+    AGENT_CODE_FUNDAMENTAL_ANALYST,
+    AGENT_CODE_TECHNICAL_ANALYST,
+    AGENT_CODE_VALUATION_ANALYST,
+    AGENT_CODE_NEWS_SENTIMENT_ANALYST,
+    AGENT_CODE_RISK_ANALYST,
+)
+
+VALID_AGENT_CODES = {
+    *SPECIALIST_AGENT_CODES,
+    AGENT_CODE_INVESTMENT_COMMITTEE,
+    AGENT_CODE_COMPLIANCE_REVIEW,
+}
 
 
 class AgentFinding(Base):

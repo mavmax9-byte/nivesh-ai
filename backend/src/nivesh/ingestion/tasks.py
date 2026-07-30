@@ -19,7 +19,16 @@ import logging
 import uuid
 
 from nivesh.ai_agents.agents.fundamental.agent import FundamentalAnalystAgent
-from nivesh.ai_agents.agents.fundamental.validation import InvestmentAdviceDetectedError
+from nivesh.ai_agents.agents.news_sentiment.agent import NewsSentimentAnalystAgent
+from nivesh.ai_agents.agents.risk.agent import RiskAnalystAgent
+from nivesh.ai_agents.agents.technical.agent import TechnicalAnalystAgent
+from nivesh.ai_agents.agents.valuation.agent import ValuationAnalystAgent
+from nivesh.ai_agents.committee.exceptions import (
+    CommitteeQuorumNotMetError,
+    ComplianceRejectedError,
+)
+from nivesh.ai_agents.guardrails import InvestmentAdviceDetectedError
+from nivesh.ai_agents.orchestrator import InvestmentCommitteeOrchestrator
 from nivesh.ai_agents.providers.factory import get_llm_provider
 from nivesh.ai_agents.repository import AgentFindingRepository
 from nivesh.ai_agents.service import AIAgentsService
@@ -511,4 +520,282 @@ def generate_fundamental_analysis(self, symbol: str) -> dict:
         raise
     except Exception as exc:
         logger.exception("generate_fundamental_analysis_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_technical_analysis(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            company_repository = CompanyRepository(session)
+            agent = TechnicalAnalystAgent(
+                retrieval_service=RetrievalEngineService(
+                    embedding_provider=get_embedding_provider(),
+                    company_repository=company_repository,
+                    evidence_repository=RetrievalRepository(session),
+                ),
+                llm_provider=get_llm_provider(),
+                company_repository=company_repository,
+            )
+            service = AIAgentsService(
+                agent=agent,
+                company_repository=company_repository,
+                finding_repository=AgentFindingRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            result = await service.run_analysis(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "agent_code": result.agent_code,
+                "confidence_score": result.confidence_score,
+                "evidence_sufficiency": result.evidence_sufficiency,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_technical_analysis",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def generate_technical_analysis(self, symbol: str) -> dict:
+    """Runs the Technical Analyst (v1.0) standalone -- see
+    generate_fundamental_analysis's docstring for the shared retry/
+    rejection semantics every ai_agents generation task follows."""
+    try:
+        return asyncio.run(_generate_technical_analysis(symbol))
+    except InvestmentAdviceDetectedError:
+        logger.error("generate_technical_analysis_advice_rejected", extra={"symbol": symbol})
+        raise
+    except Exception as exc:
+        logger.exception("generate_technical_analysis_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_valuation_analysis(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            company_repository = CompanyRepository(session)
+            agent = ValuationAnalystAgent(
+                retrieval_service=RetrievalEngineService(
+                    embedding_provider=get_embedding_provider(),
+                    company_repository=company_repository,
+                    evidence_repository=RetrievalRepository(session),
+                ),
+                llm_provider=get_llm_provider(),
+                company_repository=company_repository,
+                statement_repository=FinancialStatementRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            service = AIAgentsService(
+                agent=agent,
+                company_repository=company_repository,
+                finding_repository=AgentFindingRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            result = await service.run_analysis(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "agent_code": result.agent_code,
+                "confidence_score": result.confidence_score,
+                "evidence_sufficiency": result.evidence_sufficiency,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_valuation_analysis",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def generate_valuation_analysis(self, symbol: str) -> dict:
+    """Runs the Valuation Analyst (v1.0) standalone, including its own
+    computed-P/E step (agents/valuation/ratios.py) -- see
+    generate_fundamental_analysis's docstring for the shared retry/
+    rejection semantics every ai_agents generation task follows."""
+    try:
+        return asyncio.run(_generate_valuation_analysis(symbol))
+    except InvestmentAdviceDetectedError:
+        logger.error("generate_valuation_analysis_advice_rejected", extra={"symbol": symbol})
+        raise
+    except Exception as exc:
+        logger.exception("generate_valuation_analysis_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_news_sentiment_analysis(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            company_repository = CompanyRepository(session)
+            agent = NewsSentimentAnalystAgent(
+                retrieval_service=RetrievalEngineService(
+                    embedding_provider=get_embedding_provider(),
+                    company_repository=company_repository,
+                    evidence_repository=RetrievalRepository(session),
+                ),
+                llm_provider=get_llm_provider(),
+                company_repository=company_repository,
+            )
+            service = AIAgentsService(
+                agent=agent,
+                company_repository=company_repository,
+                finding_repository=AgentFindingRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            result = await service.run_analysis(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "agent_code": result.agent_code,
+                "confidence_score": result.confidence_score,
+                "evidence_sufficiency": result.evidence_sufficiency,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_news_sentiment_analysis",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def generate_news_sentiment_analysis(self, symbol: str) -> dict:
+    """Runs the News & Sentiment Analyst (v1.0) standalone -- see
+    generate_fundamental_analysis's docstring for the shared retry/
+    rejection semantics every ai_agents generation task follows."""
+    try:
+        return asyncio.run(_generate_news_sentiment_analysis(symbol))
+    except InvestmentAdviceDetectedError:
+        logger.error("generate_news_sentiment_analysis_advice_rejected", extra={"symbol": symbol})
+        raise
+    except Exception as exc:
+        logger.exception("generate_news_sentiment_analysis_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_risk_analysis(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            company_repository = CompanyRepository(session)
+            agent = RiskAnalystAgent(
+                retrieval_service=RetrievalEngineService(
+                    embedding_provider=get_embedding_provider(),
+                    company_repository=company_repository,
+                    evidence_repository=RetrievalRepository(session),
+                ),
+                llm_provider=get_llm_provider(),
+                company_repository=company_repository,
+            )
+            service = AIAgentsService(
+                agent=agent,
+                company_repository=company_repository,
+                finding_repository=AgentFindingRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+            )
+            result = await service.run_analysis(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "agent_code": result.agent_code,
+                "confidence_score": result.confidence_score,
+                "evidence_sufficiency": result.evidence_sufficiency,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_risk_analysis",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def generate_risk_analysis(self, symbol: str) -> dict:
+    """Runs the Risk Analyst (v1.0) standalone -- see
+    generate_fundamental_analysis's docstring for the shared retry/
+    rejection semantics every ai_agents generation task follows."""
+    try:
+        return asyncio.run(_generate_risk_analysis(symbol))
+    except InvestmentAdviceDetectedError:
+        logger.error("generate_risk_analysis_advice_rejected", extra={"symbol": symbol})
+        raise
+    except Exception as exc:
+        logger.exception("generate_risk_analysis_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _run_investment_committee(symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            company_repository = CompanyRepository(session)
+            orchestrator = InvestmentCommitteeOrchestrator(
+                retrieval_service=RetrievalEngineService(
+                    embedding_provider=get_embedding_provider(),
+                    company_repository=company_repository,
+                    evidence_repository=RetrievalRepository(session),
+                ),
+                llm_provider=get_llm_provider(),
+                company_repository=company_repository,
+                statement_repository=FinancialStatementRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+                finding_repository=AgentFindingRepository(session),
+            )
+            result = await orchestrator.run(symbol)
+            return {
+                "company_id": str(result.company_id),
+                "symbol": result.symbol,
+                "succeeded_specialists": result.succeeded_specialists,
+                "failed_specialists": result.failed_specialists,
+                "compliance_approved": result.compliance_approved,
+                "confidence_score": result.confidence_score,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.run_investment_committee",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def run_investment_committee(self, symbol: str) -> dict:
+    """Runs the Investment Committee (v1.0's multi-agent orchestration
+    layer) for a company: one shared Retrieval Engine call (§3), every
+    specialist agent run over that shared evidence pool (Fundamental
+    reused unchanged, plus Technical/Valuation/News & Sentiment/Risk, new
+    in v1.0), the Committee Chair's synthesis, and the Compliance gate --
+    see orchestrator.py for the full pipeline and INVESTMENT_COMMITTEE_
+    DESIGN.md for the design this implements exactly.
+
+    `CommitteeQuorumNotMetError` (Fundamental Analyst did not succeed) and
+    `ComplianceRejectedError` (the Chair's draft was rejected -- but the
+    rejection itself is already durably persisted as a `compliance_review`
+    row by the time this is raised, see orchestrator.py) are both genuine,
+    non-transient rejections, the same category `InvestmentAdviceDetectedError`
+    and `DuplicateExtractionError` already are in this codebase -- logged
+    and left failed, not retried, since retrying identical inputs would
+    not produce a materially different outcome. Every other error is
+    retried like any other task in this module.
+
+    Not auto-chained from any upstream sync, for the same cost-profile
+    reason `generate_fundamental_analysis` isn't -- triggered only via
+    `POST /reports` today.
+    """
+    try:
+        return asyncio.run(_run_investment_committee(symbol))
+    except (CommitteeQuorumNotMetError, ComplianceRejectedError) as exc:
+        logger.error(
+            "run_investment_committee_rejected",
+            extra={"symbol": symbol, "error_code": exc.error_code},
+        )
+        raise
+    except Exception as exc:
+        logger.exception("run_investment_committee_failed", extra={"symbol": symbol})
         raise self.retry(exc=exc) from exc

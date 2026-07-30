@@ -137,6 +137,99 @@ async def test_get_latest_finding_raises_not_found_for_unknown_symbol():
 
 
 @pytest.mark.asyncio
+async def test_persist_finding_raises_not_found_for_unknown_symbol():
+    company_repository = AsyncMock()
+    company_repository.get_by_symbol.return_value = None
+    service = AIAgentsService(
+        agent=None,
+        company_repository=company_repository,
+        finding_repository=AsyncMock(),
+        dossier_repository=AsyncMock(),
+    )
+    with pytest.raises(NotFoundError):
+        await service.persist_finding("NOPE", _finding())
+
+
+@pytest.mark.asyncio
+async def test_persist_finding_persists_and_links_without_a_concrete_agent():
+    """v1.0: the Investment Committee orchestrator constructs this service
+    with agent=None (persist-only mode) for the Chair's and Compliance's
+    own findings, which aren't produced by a BaseAgent.run() call."""
+    company_id = uuid.uuid4()
+    company = _company(company_id)
+    finding = AgentFinding(
+        agent_code="investment_committee",
+        summary="Overall the fundamentals look steady.",
+        confidence_score=0.65,
+        evidence_ids=[],
+        detail={"prompt_version": "committee-chair-v1", "model_used": "gpt-4o-mini"},
+    )
+    persisted_row = AgentFindingRow(
+        id=uuid.uuid4(), company_id=company_id, agent_code="investment_committee"
+    )
+    service, agent, company_repository, finding_repository, dossier_repository = _make_service(
+        company, finding, has_research_version=True, persisted_finding=persisted_row
+    )
+    service = AIAgentsService(
+        agent=None,
+        company_repository=company_repository,
+        finding_repository=finding_repository,
+        dossier_repository=dossier_repository,
+    )
+
+    result = await service.persist_finding("TCS", finding)
+
+    assert result.agent_code == "investment_committee"
+    finding_repository.upsert.assert_awaited_once()
+    upsert_kwargs = finding_repository.upsert.await_args.kwargs
+    assert upsert_kwargs["agent_code"] == "investment_committee"
+    dossier_repository.bulk_create_sources.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_persist_finding_skips_dossier_link_when_requested():
+    """Compliance's own verdict is an audit record of the review, not a
+    new piece of evidence about the company -- the orchestrator passes
+    link_to_dossier=False for it (INVESTMENT_COMMITTEE_DESIGN.md §10)."""
+    company_id = uuid.uuid4()
+    company = _company(company_id)
+    finding = AgentFinding(
+        agent_code="compliance_review",
+        summary="Committee decision approved for publication.",
+        confidence_score=1.0,
+        evidence_ids=[],
+        detail={"approved": True, "reasons": []},
+    )
+    service, agent, company_repository, finding_repository, dossier_repository = _make_service(
+        company, finding, has_research_version=True
+    )
+    service = AIAgentsService(
+        agent=None,
+        company_repository=company_repository,
+        finding_repository=finding_repository,
+        dossier_repository=dossier_repository,
+    )
+
+    await service.persist_finding("TCS", finding, link_to_dossier=False)
+
+    finding_repository.upsert.assert_awaited_once()
+    dossier_repository.bulk_create_sources.assert_not_awaited()
+    dossier_repository.create_timeline_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_raises_when_constructed_without_agent():
+    service = AIAgentsService(
+        agent=None,
+        company_repository=AsyncMock(),
+        finding_repository=AsyncMock(),
+        dossier_repository=AsyncMock(),
+    )
+    with pytest.raises(NotImplementedError):
+        await service.run_analysis("TCS")
+
+
+@pytest.mark.asyncio
 async def test_get_latest_finding_returns_repository_result():
     company_id = uuid.uuid4()
     company = _company(company_id)

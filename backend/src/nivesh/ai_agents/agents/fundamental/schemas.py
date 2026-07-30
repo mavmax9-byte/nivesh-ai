@@ -12,16 +12,30 @@ model.
 
 `citation_refs` is a plain `list[int]`, not constrained to a minimum
 length at the schema level -- an assessment with zero *valid* citations
-is dropped by `validation.drop_unsupported_assessments` (one claim
+is dropped by `guardrails.drop_unsupported_assessments` (one claim
 removed, not the whole response rejected), which needs to see the
 raw list including any empty/invalid ones to do that.
+
+`CitationRef` moved to `ai_agents/guardrails.py` in v1.0 (it was never
+Fundamental-specific -- every specialist resolves citations to the same
+shape) and is re-imported here so existing callers of this module are
+unaffected.
 """
 
-import uuid
-from datetime import date, datetime
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
+
+from nivesh.ai_agents.guardrails import CitationRef
+
+__all__ = [
+    "CitationRef",
+    "EvidenceSufficiency",
+    "FundamentalMetricAssessment",
+    "LLMFundamentalOutput",
+    "FundamentalAnalysisResult",
+]
 
 EvidenceSufficiency = Literal["sufficient", "partial", "insufficient"]
 
@@ -41,17 +55,6 @@ class LLMFundamentalOutput(BaseModel):
     financial_health_assessment: str
     evidence_sufficiency: EvidenceSufficiency
     llm_confidence: float = Field(ge=0.0, le=1.0)
-
-
-class CitationRef(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    index: int
-    source_type: str
-    source_table: str
-    source_id: uuid.UUID
-    title: str
-    evidence_date: date | None
 
 
 class FundamentalAnalysisResult(BaseModel):

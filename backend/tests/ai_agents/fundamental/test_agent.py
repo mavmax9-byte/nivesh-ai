@@ -6,7 +6,7 @@ import pytest
 
 from nivesh.ai_agents.agents.base import AgentContext
 from nivesh.ai_agents.agents.fundamental.agent import FundamentalAnalystAgent
-from nivesh.ai_agents.agents.fundamental.validation import InvestmentAdviceDetectedError
+from nivesh.ai_agents.guardrails import InvestmentAdviceDetectedError
 from nivesh.ai_agents.providers.base import LLMCompletion
 from nivesh.ai_agents.providers.exceptions import LLMResponseParsingError
 from nivesh.companies.models import Company, Exchange
@@ -186,6 +186,34 @@ async def test_run_raises_parsing_error_on_schema_mismatch():
 
     with pytest.raises(LLMResponseParsingError):
         await agent.run(AgentContext(company_id=str(company.id), trigger_type="manual"))
+
+
+@pytest.mark.asyncio
+async def test_run_uses_shared_evidence_pool_without_calling_retrieval_engine():
+    """v1.0: when the orchestrator injects an already-fetched shared
+    evidence pool, the agent must filter it directly and never call
+    retrieval_engine itself (INVESTMENT_COMMITTEE_DESIGN.md §3)."""
+    company = _company()
+    shared_pool = [_evidence_item(), _evidence_item(source_type="news_article")]
+
+    company_repository = AsyncMock()
+    company_repository.get_by_id.return_value = company
+    retrieval_service = AsyncMock()
+    llm_provider = AsyncMock()
+    llm_provider.complete.return_value = _llm_completion(_valid_llm_output())
+
+    agent = FundamentalAnalystAgent(
+        retrieval_service=retrieval_service,
+        llm_provider=llm_provider,
+        company_repository=company_repository,
+        shared_evidence=shared_pool,
+    )
+
+    finding = await agent.run(AgentContext(company_id=str(company.id), trigger_type="manual"))
+
+    retrieval_service.build_context_package.assert_not_awaited()
+    assert finding.detail["evidence_sufficiency"] == "sufficient"
+    assert len(finding.detail["citations"]) == 1
 
 
 @pytest.mark.asyncio

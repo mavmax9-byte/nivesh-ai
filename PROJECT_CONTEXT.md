@@ -5,7 +5,7 @@ conversation (or a new human engineer) should be able to read this file and
 continue development with zero loss of context. Written as an onboarding
 document for a Senior Staff Engineer joining the project.
 
-Last updated: after v0.9 (Fundamental Analyst).
+Last updated: after v1.0 (Investment Committee).
 
 ---
 
@@ -84,9 +84,24 @@ Next.js (frontend, :3000)  →  FastAPI (backend, :8000, /api/v1)  →  PostgreS
   unsafe model output is actually possible; every other module's
   ingestion, normalization, validation, and categorization remains fully
   deterministic (fixed lookup tables, regex/string heuristics,
-  arithmetic), and `InvestmentCommitteeOrchestrator` (the multi-agent
-  aggregation/synthesis layer) remains unimplemented — v0.9 built one
-  working specialist agent, not the Investment Committee (see §12).
+  arithmetic). **v1.0 (Investment Committee) is the first version to
+  fill in `InvestmentCommitteeOrchestrator` for real.** Four new
+  specialist agents (Technical, Valuation, News & Sentiment, Risk) join
+  the already-shipped Fundamental Analyst, all run over **one shared
+  Retrieval Engine call per committee run** (not one per specialist —
+  `retrieval_engine` itself needed zero changes for this, only who calls
+  it and how many times), synthesized by a new Committee Chair
+  (`ai_agents/committee/chair.py`, not a `BaseAgent` — it never calls
+  `retrieval_engine` directly, only reads specialists' own already-
+  validated findings) into one cited, cross-agent narrative, gated by a
+  deterministic-only Compliance re-check before anything is treated as
+  publishable. Every deterministic guardrail principle from v0.9
+  (citation enforcement, the investment-advice-language filter, a
+  confidence score the model can never self-inflate) is reused, not
+  reinvented — the citation/advice-language/confidence functions
+  actually moved to a new shared `ai_agents/guardrails.py` in this
+  version specifically because they were never Fundamental-specific
+  (see §3/§13 point 1d).
 - No object/blob storage (S3, MinIO, etc.) anywhere in the stack. This was
   an explicit decision for v0.4 (extracted text goes into Postgres `Text`
   columns) and nothing in `config.py`/`docker-compose.yml` provides one.
@@ -136,8 +151,8 @@ nivesh-ai/
 │   │   ├── technical_intelligence/ # v0.6: Technical Intelligence Engine
 │   │   ├── knowledge_layer/     # v0.7: Knowledge Layer (embeddings & semantic retrieval)
 │   │   ├── retrieval_engine/    # v0.8: Retrieval Engine (hybrid evidence retrieval)
-│   │   ├── ai_agents/           # v0.9: Fundamental Analyst (first concrete agent);
-│   │   │                        # InvestmentCommitteeOrchestrator still stubbed
+│   │   ├── ai_agents/           # v0.9 Fundamental Analyst + v1.0 Investment Committee:
+│   │   │                        # 5 specialists, Chair, Compliance, real orchestrator
 │   │   └── ingestion/tasks.py   # every Celery task, one shared file
 │   └── tests/                   # mirrors src/ 1:1 by domain, plus conftest.py
 │
@@ -190,15 +205,75 @@ data-ingestion source) and the first module with a two-level internal
 structure. `ai_agents/agents/fundamental/` is a self-contained specialist-
 agent package (`agent.py`, `prompts.py`, `queries.py`, `schemas.py`,
 `validation.py`) sitting *inside* the module, not a sibling top-level
-module — the intended template for every future specialist agent named
-in `agents/base.py`'s docstring (Technical Analysis, Valuation, News
-Intelligence, Macro Economy, Risk Analysis, Portfolio Analysis,
-Compliance — see §12). `ai_agents/providers/` stays module-level and
-shared across all of them, the same way `retrieval_engine` reuses
-`knowledge_layer`'s single `EmbeddingProvider` rather than each future
-agent inventing its own LLM plumbing (see §8). `ai_agents/models.py` /
-`repository.py` / `service.py` are new for v0.9 — the module had **zero**
-database presence before this version (see §4).
+module — the intended template every v1.0 specialist agent actually
+followed. `ai_agents/providers/` stays module-level and shared across
+all of them, the same way `retrieval_engine` reuses `knowledge_layer`'s
+single `EmbeddingProvider` rather than each future agent inventing its
+own LLM plumbing (see §8). `ai_agents/models.py` / `repository.py` /
+`service.py` are new for v0.9 — the module had **zero** database
+presence before this version (see §4).
+
+**v1.0 (Investment Committee) added four more `ai_agents/agents/<name>/`
+packages** (`technical/`, `valuation/`, `news_sentiment/`, `risk/`),
+each the exact same five-file shape Fundamental established — plus two
+new things at the `ai_agents/` module level:
+
+- **`ai_agents/guardrails.py`** — `check_no_investment_advice`,
+  `filter_valid_citation_refs`, `drop_unsupported_assessments`,
+  `resolve_citation_refs`, `compute_confidence_score`, `CitationRef`, and
+  the new shared `SpecialistAssessment`/`Stance` shape, all promoted out
+  of `agents/fundamental/validation.py` — none of it was ever
+  Fundamental-specific, and every new specialist, the Chair, and
+  Compliance all needed the identical logic. `agents/fundamental/
+  validation.py` now keeps only `compute_evidence_confidence` (genuinely
+  domain-specific evidence-type weighting) and re-imports the rest —
+  real code motion, zero behavior change, called out explicitly rather
+  than buried in the wider diff (the same "flag real modifications to
+  shipped code" discipline point 2 below follows for `shared_evidence`).
+  Each new specialist's own `validation.py` keeps just its own
+  `compute_evidence_confidence` variant, the same split.
+- **`ai_agents/committee/`** — the Chair/Compliance/orchestration-support
+  package, none of it a `BaseAgent`: `inputs.py` (`SpecialistFindingInput`,
+  the DTO the orchestrator hands the Chair), `citations.py` (global,
+  cross-specialist citation dedup — reuses the identity-based
+  `(source_type, source_id)` dedup idiom `retrieval_engine.normalization
+  .deduplicate_and_rank` established at the evidence layer, reapplied one
+  level up), `normalization.py` (maps each specialist's own persisted
+  shape — Fundamental's `strengths`/`concerns`, everyone else's
+  `findings`/`stance` — onto one common structure with citation indices
+  remapped from local to global), `confidence.py` (committee-level
+  aggregation, §8), `schemas.py`, `prompts.py`, `chair.py`
+  (`CommitteeChair.synthesize`), `compliance.py` (the deterministic gate,
+  a plain function, not a class), and `exceptions.py`
+  (`CommitteeQuorumNotMetError`, `ComplianceRejectedError`).
+- **`ai_agents/orchestrator.py`** — `InvestmentCommitteeOrchestrator` is
+  now a real synthesis/fan-out engine (previously always raised
+  `NotImplementedYetError`). It performs the one shared
+  `RetrievalEngineService.build_context_package` call, runs all five
+  specialists **sequentially, not concurrently** (a deliberate choice:
+  every specialist here shares this orchestrator's one `AsyncSession`,
+  and a single `AsyncSession` is not safe for concurrent coroutine use —
+  seq. execution is a real, accepted latency/cost cost, not an
+  oversight — see its own module docstring), applies the Fundamental-
+  must-succeed quorum rule, calls the Chair, then Compliance, and
+  persists everything. It has **no knowledge of Celery** — enqueuing
+  happens directly in `router.py` (mirroring every specialist's own
+  "resolve, then `.delay()`" route shape) specifically to avoid a
+  circular import between `orchestrator.py` and `ingestion/tasks.py`.
+- **One real, additive modification to already-shipped v0.9 code**:
+  every concrete specialist agent's constructor (including
+  `FundamentalAnalystAgent`, retroactively) gained an optional
+  `shared_evidence: list[EvidenceItem] | None = None` parameter. `None`
+  (the default) preserves v0.9's exact standalone behavior — every
+  direct-invocation route (`POST /agents/fundamental/{symbol}` etc.)
+  still calls `retrieval_engine` itself, unchanged. When the orchestrator
+  runs a specialist as part of a committee, it passes the already-fetched
+  shared pool instead. `AIAgentsService` also gained a `persist_finding`
+  public method (the agent-optional, "persist an already-built
+  `AgentFinding`" half of `run_analysis`, factored out) so the Chair's
+  and Compliance's own findings — neither produced by a `BaseAgent.run()`
+  call — persist through the identical path every specialist finding
+  does.
 
 ### Dependencies (`backend/pyproject.toml`)
 
@@ -243,6 +318,20 @@ deliberate divergence from `retrieval_engine`'s stateless choice
 looking back on (and worth `GET /agents/fundamental/{symbol}` reading
 back — see §16), unlike a retrieval call, which is a transient lookup
 over evidence every other module already owns.
+
+**v1.0 (Investment Committee) added no migration and no table** — the
+`agent_findings` table `0009_agent_findings` created for v0.9 was
+explicitly built to support exactly this (its own docstring: "each
+future specialist agent can persist its own richer shape without a
+schema change here"). Confirmed true: four new specialists
+(`technical_analyst`, `valuation_analyst`, `news_sentiment_analyst`,
+`risk_analyst`), the Chair's synthesized decision
+(`agent_code="investment_committee"`), and Compliance's verdict
+(`agent_code="compliance_review"`) all get their own upserted row under
+the existing `(company_id, agent_code)` unique constraint — see
+`ai_agents/models.py`'s `VALID_AGENT_CODES`/`SPECIALIST_AGENT_CODES`.
+Pattern 6 below (upsert-recomputed, not gated by a checksum) now
+describes seven `agent_code` values, not one.
 
 **`0008_knowledge_layer` requires the Postgres `vector` extension
 (pgvector)** — the first migration in this project with an extension
@@ -407,9 +496,10 @@ hoc by application code.
   Postgres is unreachable, so the rest of the suite stays runnable without
   a DB — as of v0.7, this fixture also runs `CREATE EXTENSION IF NOT
   EXISTS vector` before `create_all`, since `KnowledgeEmbedding`'s column
-  type needs it (see §4). As of v0.9: **489 tests**, all passing with a
-  live Postgres that has the `vector` extension installed, Ruff and mypy
-  both clean across the whole `src/` tree. `retrieval_engine` has a
+  type needs it (see §4). As of v1.0: **585 tests** (up from 489 at
+  v0.9), all passing with a live Postgres that has the `vector` extension
+  installed, Ruff and mypy both clean across the whole `src/` tree.
+  `retrieval_engine` has a
   `test_repositories.py` despite owning no table of its own — it exercises
   `RetrievalRepository`'s delegation to each sibling repository against
   real seeded rows, including the document-section flattening logic (see
@@ -430,6 +520,27 @@ hoc by application code.
   `retrieval_engine`'s *semantic* leg couldn't be exercised live either,
   only its structured SQL leg and its graceful degradation when the
   semantic leg fails (which **was** verified live — see §14).
+  **v1.0's live pass used the same technique, scaled up**: the real
+  `InvestmentCommitteeOrchestrator`, real `RetrievalEngineService`, and
+  real Postgres data for TCS were run end-to-end with every specialist's
+  and the Chair's `LLMProvider` calls stubbed (one stub branching on each
+  system prompt's distinctive opening sentence to return the right shape
+  per agent). Confirmed against genuine evidence identities: the shared
+  single retrieval call (asserted awaited exactly once), all five
+  specialists succeeding and persisting (7 `agent_findings` rows: 5
+  specialists + `investment_committee` + `compliance_review`),
+  cross-specialist citation identity-dedup (3 unique global citations
+  from 5 specialists each citing `[1]`), partial degradation when an
+  optional specialist fails, quorum enforcement
+  (`CommitteeQuorumNotMetError`) when Fundamental fails, and Compliance's
+  fail-closed rejection (`ComplianceRejectedError`) with its own audit
+  row still durably persisted. This pass caught one real bug before
+  release: Compliance's verdict was initially being linked into the
+  Research Dossier as its own evidence row in addition to the Chair's,
+  contradicting §10's "exactly one more row" design — fixed by adding
+  `link_to_dossier: bool = True` to `AIAgentsService.persist_finding`,
+  with the orchestrator passing `False` for Compliance specifically (see
+  §10).
 
 ---
 
@@ -500,6 +611,14 @@ hoc by application code.
   `commit()` passthrough every aggregate-root repository provides, used
   by `AIAgentsService` to durably persist Research Dossier evidence rows
   on the same shared session (§10).
+- **v1.0 added exactly one new repository method**:
+  `FinancialStatementRepository.get_by_id(statement_id)`, for the
+  Valuation Analyst — `retrieval_engine`'s evidence items carry a
+  `financial_statement`'s id but not its detail rows (`eps_basic` etc.),
+  so the agent resolves its highest-relevance `financial_statement`
+  evidence item's id back to the full statement to compute a real P/E
+  ratio (`agents/valuation/ratios.py`). Additive only, the same "add one
+  method to the owning repository" discipline point 4 in §13 requires.
 
 ---
 
@@ -571,6 +690,24 @@ hoc by application code.
   one agent run produces exactly one finding, so the discrete shape
   `corporate_filings`/`document_intelligence`/`news_intelligence` already
   use is the correct fit here, not an aggregate range.
+- **v1.0 split `run_analysis` into a reusable `_persist` internal plus a
+  new public `persist_finding(symbol, finding, *, link_to_dossier=True)`
+  method.** `run_analysis` (unchanged behavior) still resolves the
+  company, calls `self._agent.run(context)`, and persists. The new
+  `persist_finding` skips the `self._agent.run(context)` step and
+  persists an already-built `AgentFinding` directly — used by
+  `InvestmentCommitteeOrchestrator` for the Committee Chair's and
+  Compliance's own findings, neither of which is produced by a
+  `BaseAgent`. `agent: BaseAgent | None` is now genuinely optional: the
+  orchestrator constructs one `AIAgentsService(agent=None, ...)` per
+  committee run purely to call `persist_finding` twice (never
+  `run_analysis`, which raises `NotImplementedError` if called without a
+  concrete agent). `link_to_dossier` defaults `True` (every specialist
+  and the Chair's own decision each get their own discrete Research
+  Dossier evidence row, §10) but the orchestrator passes `False` for
+  Compliance specifically — its verdict is an audit record of the
+  *review*, not new evidence about the company, and §10 is explicit that
+  the Chair's run adds "exactly one more" row, not two.
 
 ---
 
@@ -688,6 +825,13 @@ hoc by application code.
     default left untouched: this is financial analysis, not creative
     writing, and low temperature directly supports the determinism
     `agents/fundamental/validation.py`'s guardrails depend on (§13).
+    **v1.0 added zero new providers** — the one `OpenAIChatProvider`
+    instance every Celery task/route already constructs is now shared
+    across all five specialists and the Committee Chair for one
+    orchestrator run (six sequential `complete()` calls per full
+    committee run: 5 specialists + 1 Chair), the same "one abstraction,
+    every consumer shares it" reuse `retrieval_engine` already
+    demonstrated for `EmbeddingProvider`.
 
 ---
 
@@ -730,11 +874,18 @@ def do_the_work(self, arg: str) -> dict:
   v0.3 end-to-end verification and must be present in **every** task, not
   just the ones that existed when it was fixed.
 - Exceptions that represent a genuine, non-retryable conflict (currently
-  `DuplicateExtractionError` from `document_intelligence` and, as of
-  v0.9, `InvestmentAdviceDetectedError` from `ai_agents/agents/
-  fundamental/validation.py`) are caught **before** the generic `except
-  Exception` handler and re-raised without `self.retry(...)` — logged
-  and left failed, not retried. `InvestmentAdviceDetectedError` fits the
+  `DuplicateExtractionError` from `document_intelligence`; as of v0.9,
+  `InvestmentAdviceDetectedError`, now in `ai_agents/guardrails.py` (§3);
+  and, as of v1.0, `CommitteeQuorumNotMetError`/`ComplianceRejectedError`
+  from `ai_agents/committee/exceptions.py`) are caught **before** the
+  generic `except Exception` handler and re-raised without
+  `self.retry(...)` — logged and left failed, not retried.
+  `CommitteeQuorumNotMetError` (Fundamental Analyst did not succeed) and
+  `ComplianceRejectedError` (Compliance rejected the Chair's draft, but
+  the rejection itself is already durably persisted as a
+  `compliance_review` audit row by the time this is raised — see §10)
+  fit the same reasoning as `InvestmentAdviceDetectedError`: retrying
+  identical inputs would not produce a materially different outcome. `InvestmentAdviceDetectedError` fits the
   same "genuine conflict, not transient" reasoning as
   `DuplicateExtractionError`: retrying the identical prompt against the
   identical evidence would not produce a materially different outcome,
@@ -773,12 +924,23 @@ def do_the_work(self, arg: str) -> dict:
   chat-completion call is real, paid API cost, and this agent's
   fundamentals-relevant evidence (financial statements, filings, document
   sections) already spans multiple upstream syncs; triggered only via
-  `POST /agents/fundamental/{symbol}` today.
+  `POST /agents/fundamental/{symbol}` today. **v1.0 added five more
+  tasks** (`generate_technical_analysis`, `generate_valuation_analysis`,
+  `generate_news_sentiment_analysis`, `generate_risk_analysis` —
+  standalone per-specialist invocation, identical template/shape to
+  `generate_fundamental_analysis`; and `run_investment_committee`, which
+  runs the whole `InvestmentCommitteeOrchestrator.run()` pipeline inside
+  one task, per the "one Celery task per committee run, no
+  `chord`/`group` fan-out" design decision — see the orchestrator's own
+  module docstring) — none of them auto-chained from anything, same
+  cost-profile reasoning.
 - Current task inventory (`ingestion.*`): `refresh_company_dossier`,
   `sync_company_market_data`, `sync_company_financials`,
   `sync_company_filings`, `extract_filing_document`, `sync_company_news`,
   `generate_technical_indicators`, `generate_knowledge_embeddings`,
-  `generate_fundamental_analysis`.
+  `generate_fundamental_analysis`, `generate_technical_analysis`,
+  `generate_valuation_analysis`, `generate_news_sentiment_analysis`,
+  `generate_risk_analysis`, `run_investment_committee`.
   **v0.8 (Retrieval Engine) added no Celery task** — it does no
   background/ingestion work, only synchronous reads (see §7), so there
   was nothing to queue.
@@ -905,9 +1067,25 @@ each finding is its own discrete fact worth its own evidence row, the
 same reasoning that makes a single filing or a single news article its
 own row rather than part of a range.
 
+**v1.0 extends this without any new `SOURCE_TYPE_*` value** — every new
+specialist's own finding links exactly the same way Fundamental's always
+has (its own `AIAgentsService.run_analysis` call handles it, unchanged),
+and the Committee Chair's synthesized decision
+(`agent_code="investment_committee"`) gets its own **one more** discrete
+`ResearchSource` row, via `AIAgentsService.persist_finding`'s default
+`link_to_dossier=True` — the same reasoning as any other finding: one
+committee run produces one decision, worth its own row. **Compliance's
+verdict does NOT get a dossier row** — `persist_finding` is called with
+`link_to_dossier=False` for it specifically, since a review-of-a-decision
+is not itself new evidence about the company the way a specialist's or
+the Chair's own analytical output is. This distinction was not obvious
+from the design doc's own phrasing alone ("the Chair's run adds exactly
+one more, on top") and was caught as a real bug during v1.0's live E2E
+pass, not during design or code review — see §5/§14.
+
 ---
 
-## 11. Completed Versions (v0.1 – v0.9)
+## 11. Completed Versions (v0.1 – v1.0)
 
 | Version | Delivered | Key modules/tables |
 |---|---|---|
@@ -925,7 +1103,9 @@ own row rather than part of a range.
 
 | **v0.9 — Fundamental Analyst** | The first concrete specialist agent (`ai_agents/agents/fundamental/`), and the first version to actually cross the "no AI reasoning outside `ai_agents`" line `retrieval_engine`/`knowledge_layer` were both built to stop short of (per the v0.9 spec's own explicit boundary, following `FUNDAMENTAL_ANALYST_DESIGN.md`, a full technical design document reviewed with the user before any code was written — see §15 point 3). Analyzes one company's financial fundamentals using **only** evidence from `RetrievalEngineService.build_context_package` (zero new retrieval logic — `retrieval_engine`/`knowledge_layer` needed zero changes), filtered client-side to fundamentals-relevant evidence types (`financial_statement`, `corporate_filing`, `document_section`, `research_summary`, `company_profile` — technical indicators and news are out of scope for this agent, reserved for future specialist agents). Reasoning is behind a new `LLMProvider` abstraction (§8) — **OpenAI `gpt-4o-mini`**, chosen via explicit `AskUserQuestion` during v0.9 planning, reusing the existing `OPENAI_API_KEY` rather than a new secret. The LLM is wrapped in multiple deterministic, non-LLM guardrails, not trusted alone: (1) a **citation-index enforcement** system — every claim must cite a `[n]` reference into the evidence actually shown to the model; an out-of-range/hallucinated index gets that specific claim dropped (not the whole response rejected), and every surviving citation resolves back to a real `(source_type, source_id)` evidence identity; (2) a **hard, pattern-based investment-advice-language filter** (`InvestmentAdviceDetectedError`, buy/sell/hold/price-target patterns) that fails the whole run closed — the single most important guard given this platform's "research only, never trades" identity (§1); (3) a **two-part confidence score** that is never purely the model's self-report — a deterministic, pre-LLM evidence-coverage signal caps what the model's own reported confidence can raise the final score to; (4) a **deterministic "insufficient evidence" short-circuit** — when no `financial_statement` evidence exists at all, the LLM is never called; an explicit insufficient-evidence result is returned instead of guessing, per the v0.9 spec's own explicit requirement. Findings are **persisted** (`agent_findings`, `ai_agents`'s first-ever migration/table — an explicit `AskUserQuestion` decision, chosen over staying stateless like `retrieval_engine`, §13 point 1c) and linked into the Research Dossier as one discrete `SOURCE_TYPE_AGENT_FINDING` evidence row per run (§10). A deliberate asymmetry with `retrieval_engine`'s v0.8 precedent: a failed/unparseable LLM call is **never** degraded into a placeholder finding the way a failed semantic leg degrades into zero hits — that would be fabricated output, which `ai_agents`'s own pre-v0.9 placeholder docstring already ruled out; `LLMProviderError`/`LLMResponseParsingError` simply propagate and retry at the Celery layer, while `InvestmentAdviceDetectedError` fails closed without retry (§9). **Not live-verified against the real OpenAI API** — no `OPENAI_API_KEY` was available in the verification sandbox, the same gap carried from v0.7/v0.8, and the user again explicitly chose to document it rather than supply a key. Compensated as far as possible: the full pipeline was verified live end-to-end against real TCS data in Postgres with only the LLM HTTP call itself stubbed, confirming citation-index enforcement (a hallucinated index dropped, a valid one resolved to a genuine evidence row), the investment-advice filter, and the schema-parsing guardrail all work correctly against real evidence identities; the "insufficient evidence" path was verified **fully live, with zero stubbing at all**, since TCS has no synced financial statements in this sandbox (see §14). | `agent_findings` |
 
-**Test count as of v0.9: 489 passing** (`pytest`, real Postgres with the
+| **v1.0 — Investment Committee** | The first multi-agent orchestration system in this codebase, and the version that finally fills in `InvestmentCommitteeOrchestrator` (previously always `501`), per `INVESTMENT_COMMITTEE_DESIGN.md` — a full technical design document reviewed and confirmed with the user (four architecture forks settled via `AskUserQuestion`) before any code was written, the same rhythm v0.9 followed. Four new specialist agents join the already-shipped Fundamental Analyst: **Technical** (`technical_indicator` evidence only — almost always exactly one citable item, by design, since `retrieval_engine` bundles every indicator into one snapshot row), **Valuation** (computes a real **P/E ratio** deterministically from the company's latest EPS and Research Dossier price snapshot, presented to the LLM as a synthetic `computed_ratio` evidence item with its own citation — **P/B is never computed**: this platform ingests no shares-outstanding figure anywhere in its schema, a gap surfaced and confirmed via `AskUserQuestion` during implementation, not assumed; every Valuation finding carries a disclosed caveat about it instead of a misleading proxy), **News & Sentiment** (`news_article`/`research_summary`), and **Risk** (`financial_statement`/`document_section`/`corporate_filing`, weighted toward `document_section` since explicit "Risk Factors" filing sections are the most direct risk evidence this codebase has). **Confirmed decisions this version, each an explicit `AskUserQuestion`**: (1) **one shared `RetrievalEngineService.build_context_package` call per committee run**, not one per specialist — distributed via a new, additive `shared_evidence` constructor parameter every concrete agent gained (including retroactively, `FundamentalAnalystAgent` — the one real modification to already-shipped v0.9 code this version made, flagged explicitly, not buried in the diff; `shared_evidence=None` preserves v0.9's exact standalone behavior); (2) **Compliance is deterministic-only** — re-runs the promoted `check_no_investment_advice` filter against the Committee Chair's synthesized text specifically (the one piece of new LLM-generated text nothing has checked yet), no second LLM review pass; (3) **quorum requires Fundamental Analyst specifically** to succeed, not just any non-zero count — the other four are optional enrichment, and any subset of them may fail without failing the committee run (a specialist's own *successful* "insufficient evidence" result still satisfies quorum, since it's a success, not a failure). The generic citation-range/advice-language/confidence-blend guardrails v0.9 built specifically inside `agents/fundamental/validation.py` were promoted to a new shared `ai_agents/guardrails.py` (§3) — real code motion, zero behavior change, since none of them were ever Fundamental-specific. The Committee Chair (`ai_agents/committee/chair.py`, not a `BaseAgent`) never calls `retrieval_engine` itself — its only inputs are specialists' own already-validated, already-persisted findings — builds a **globally deduplicated citation list** across specialists (identity-based `(source_type, source_id)` dedup, the same idiom `retrieval_engine.normalization.deduplicate_and_rank` uses one layer down), normalizes Fundamental's `strengths`/`concerns` and every new specialist's `findings`/`stance` onto one common shape, and surfaces cross-specialist **disagreements** explicitly rather than resolving them into a false consensus or any kind of verdict/score (never built: a resolved recommendation of any kind, consistent with §1's "research only, never trades" identity). Confidence aggregates as `min(mean(succeeded specialists' own confidence_score), bounded(chair.llm_confidence))` — the Chair's self-report can only lower it, never raise it, the identical single-agent rule extended one layer up. Persistence needed **zero new tables** (`agent_findings`'s generic `result_json` shape, built in v0.9 specifically anticipating this, held exactly as promised) — two new `agent_code` values (`investment_committee`, `compliance_review`), the Chair's own row carrying a `source_findings` manifest for traceability against the upsert-only table's overwrite semantics. `POST /reports` is real for the first time (was always `501`); `GET /reports/{symbol}` (new) returns the Chair's decision + Compliance verdict together, treating a Compliance-rejected run as `404`, same as never having run — the rejection itself is still durably persisted as an auditable `compliance_review` row, never silently discarded. Five sequential LLM calls per full committee run (5 specialists + Chair) is an accepted, explicitly-documented latency/cost tradeoff, not an oversight — every specialist's `AIAgentsService` shares the orchestrator's one `AsyncSession`, which is not safe for concurrent coroutine use, so `asyncio.gather` was deliberately not used (see `orchestrator.py`'s own module docstring). One real bug caught by the live E2E pass, not by design or code review: Compliance's verdict was initially being linked into the Research Dossier as its own evidence row in addition to the Chair's, contradicting the design's "exactly one more row" — fixed via a new `link_to_dossier` parameter on `AIAgentsService.persist_finding` (§7/§10). **Not live-verified against the real OpenAI API** — the same carried-forward gap from v0.7 onward, compensated the same way v0.9 was: the real orchestrator, real retrieval, and real Postgres data for TCS were run end-to-end with every LLM call stubbed (see §5/§14). | *(none — zero new tables, reuses `agent_findings`)* |
+
+**Test count as of v1.0: 585 passing** (`pytest`, real Postgres with the
 `vector` extension installed). Ruff and mypy both clean across the whole
 `src/` tree.
 
@@ -935,53 +1115,51 @@ fixes → `d308b17` mypy fixes → `53b1e66` feat(v0.3) corporate filings →
 `d3f691c` feat(v0.4) document intelligence → `ae47f82` feat(v0.5) news
 intelligence → `084870c` feat(v0.6) technical intelligence → `9b0b621`
 feat(v0.7) knowledge layer → `1f8f4ac` feat(v0.8) retrieval engine →
-(v0.9 fundamental analyst, see git log for the current hash).
+`989dd64` feat(v0.9) fundamental analyst →
+(v1.0 investment committee, see git log for the current hash).
 
 ---
 
-## 12. Current Roadmap (v0.10 onwards)
+## 12. Current Roadmap (v1.1 onwards)
 
-Nothing beyond v0.9 has been scoped or approved yet. Do not start
-implementing v0.10 without an explicit spec from the user — this project's
+Nothing beyond v1.0 has been scoped or approved yet. Do not start
+implementing v1.1 without an explicit spec from the user — this project's
 working pattern has consistently been: architecture review first (no code)
 → user confirms scope → implement → self-review → verify → commit/push.
-See §17 for the current v0.10 spec status.
+See §17 for the current v1.1 spec status.
 
-**What v0.4 through v0.9 were explicitly building toward**: document
+**What v0.4 through v1.0 were explicitly building toward**: document
 extractions, news articles, technical indicators, a semantic retrieval
-index, a hybrid ranked-evidence retrieval surface over all of it, and now
-one working specialist agent consuming that surface to actually reason —
-exist so a *future* version can build on them. Natural, foreshadowed next
-steps, roughly in dependency order:
+index, a hybrid ranked-evidence retrieval surface over all of it, one
+working specialist agent consuming that surface to actually reason, and
+now a real multi-agent committee synthesizing five specialists into one
+cited, cross-checked view — exist so a *future* version can build on
+them. Natural, foreshadowed next steps, roughly in dependency order:
 
-1. **The rest of the `ai_agents` / Investment Committee layer.** v0.9
-   built exactly one specialist agent (`FundamentalAnalystAgent`) and
-   left `InvestmentCommitteeOrchestrator.request_analysis` untouched —
-   it still always raises `NotImplementedYetError`. Two genuinely
-   different pieces of work remain, both still fully unscoped:
-   - **More specialist agents** — `agents/base.py`'s docstring already
-     names eight more (Market Data, Technical Analysis, Valuation, News
-     Intelligence, Macro Economy, Risk Analysis, Portfolio Analysis,
-     Compliance). `ai_agents/agents/fundamental/` is the intended
-     template each would follow (§3/§12 of `FUNDAMENTAL_ANALYST_DESIGN.md`):
-     its own `agent.py`/`prompts.py`/`queries.py`/`schemas.py`/
-     `validation.py`, sharing the module-level `LLMProvider` abstraction
-     (§8) and the `agent_findings` table (one row per `(company_id,
-     agent_code)`, §4) rather than inventing new plumbing per agent.
-   - **The orchestrator itself** — aggregating multiple agents' findings,
-     detecting conflicts, weighted scoring, an LLM synthesis step, a
-     Compliance Agent pass before publication (per `orchestrator.py`'s
-     own docstring). Needs a real spec and its own architecture-review
-     pass before any code — v0.9 deliberately did not invent a Findings
-     Store schema or cross-agent aggregation logic; see
-     `FUNDAMENTAL_ANALYST_DESIGN.md` §13 for why that was left
-     unscoped rather than guessed at.
-   News sentiment analysis / AI summarization of articles, and any
-   trading strategy/signal/forecasting logic built on top of
-   `technical_intelligence`'s indicator values, both still belong to a
-   future specialist agent, not to `news_intelligence` or
-   `technical_intelligence` themselves.
-2. **A real filings-discovery provider** for `corporate_filings` (NSE/BSE
+1. **Macro Economy and Portfolio Analyst agents** — the two specialist
+   agents named in `agents/base.py`'s original docstring that v1.0
+   explicitly, deliberately left out of scope (`INVESTMENT_COMMITTEE_
+   DESIGN.md` §1), not forgotten: Macro Economy has no data source
+   anywhere in this codebase (no ingestion module for interest rates,
+   inflation, GDP, currency — building it now would mean fabricating
+   commentary or bolting on an entirely new, unscoped ingestion module);
+   Portfolio Analyst needs portfolio/user-level context (multiple
+   holdings, weights), a fundamentally different `AgentContext` shape
+   than every other agent's single-company one, and is also blocked on
+   real auth (item 4 below). Both need their own explicit spec before
+   any code, the same rhythm every prior version followed.
+2. **A shares-outstanding data source, to unblock a real P/B ratio.**
+   Discovered as a genuine, permanent gap during v1.0 implementation
+   (not a v0.9-era known limitation): the Valuation Analyst computes a
+   real P/E ratio but explicitly does **not** compute P/B, because this
+   platform ingests no shares-outstanding figure anywhere in its schema
+   (`Company`, `FinancialStatement`, `BalanceSheet`, `market_data` all
+   lack it) — confirmed via `AskUserQuestion` during implementation
+   rather than silently approximated with a non-per-share proxy. Adding
+   this is a real schema/ingestion change (a new field somewhere plus a
+   data source for it), out of v1.0's "zero new tables" scope, and needs
+   its own mini-design pass, not a quiet addition.
+4. **A real filings-discovery provider** for `corporate_filings` (NSE/BSE
    announcements API or a commercial vendor) that supplies genuine
    document deep-links — this would make `document_intelligence`'s PDF
    path the common case instead of the fallback (and, downstream, both
@@ -990,63 +1168,93 @@ steps, roughly in dependency order:
    actually populate for real companies in this sandbox — see §14), with
    zero changes needed to `document_intelligence` itself (the whole point
    of the provider abstraction).
-3. **A second real news provider** for `news_intelligence` (Reuters,
+5. **A second real news provider** for `news_intelligence` (Reuters,
    Economic Times, Moneycontrol, Google News, etc.) — needed before true
    cross-provider duplicate-article identity resolution can be designed
    and validated against real data (see §11's v0.5 entry and §14 for why
    this was deliberately deferred rather than guessed at speculatively).
-4. **Real authentication** (`core/security.py` is an explicit,
+6. **Real authentication** (`core/security.py` is an explicit,
    documented placeholder — swap for Clerk/Auth.js or similar).
-5. **Portfolio analytics** (`portfolios/service.py`'s docstring: "Portfolio
+7. **Portfolio analytics** (`portfolios/service.py`'s docstring: "Portfolio
    analytics... are produced by the Portfolio Analysis Agent, not this
-   service" — i.e. this is blocked on #1).
-6. **Frontend wiring** — the Next.js app currently has placeholder pages
+   service" — i.e. this is blocked on item 1).
+8. **Frontend wiring** — the Next.js app currently has placeholder pages
    with "No data yet" copy; `lib/api-client.ts` exists but nothing calls
    the real backend endpoints yet.
-7. **Raw document storage** — explicitly postponed in v0.4 (see §13). If
+9. **Raw document storage** — explicitly postponed in v0.4 (see §13). If
    ever revisited, requires a real infrastructure decision (S3/MinIO) that
    doesn't exist in this stack today.
-8. **A pgvector ANN index** (ivfflat/hnsw) for `knowledge_embeddings`,
-   once real data volumes make pgvector's current exact/sequential-scan
-   search (see §14) worth optimizing — not needed at today's scale.
-9. **Auto-chaining `generate_knowledge_embeddings`** from its upstream
-   syncs (news, filings, document extraction, dossier refresh), once the
-   resulting OpenAI API cost profile has been explicitly discussed with
-   the user (see §9's v0.7 entry for why this was deliberately deferred
-   rather than assumed).
-10. **Revisiting `retrieval_engine`'s scoring formula** — the single
+10. **A pgvector ANN index** (ivfflat/hnsw) for `knowledge_embeddings`,
+    once real data volumes make pgvector's current exact/sequential-scan
+    search (see §14) worth optimizing — not needed at today's scale.
+11. **Auto-chaining `generate_knowledge_embeddings`** from its upstream
+    syncs (news, filings, document extraction, dossier refresh), once the
+    resulting OpenAI API cost profile has been explicitly discussed with
+    the user (see §9's v0.7 entry for why this was deliberately deferred
+    rather than assumed).
+12. **Revisiting `retrieval_engine`'s scoring formula** — the single
     shared `RECENCY_HALF_LIFE_DAYS = 180` and the plain
     `1 - cosine_distance` semantic score are deliberate, simple choices
     for a foundational version, not empirically validated against real
-    retrieval quality (see §13/§14). `ai_agents` (item 1) is now
-    consuming this module's output for real via the Fundamental
-    Analyst — once a real `OPENAI_API_KEY` is configured and this agent
-    has real runs to look at, that's the point to revisit tuning, not
-    before, since there was still no real usage signal to tune against
-    during v0.9's own development (no live LLM verification — see §14).
-11. **A numeric cross-check for the Fundamental Analyst** — comparing
-    LLM-stated financial figures against already-persisted `financials`
-    data (`FinancialRatio`/`ProfitAndLoss`) as an additional
-    hallucination guard, deliberately deferred out of v0.9's scope (an
-    explicit `AskUserQuestion` decision during v0.9 planning — see
+    retrieval quality (see §13/§14). `ai_agents` now has five specialists
+    plus a Chair all consuming this module's output for real — once a
+    real `OPENAI_API_KEY` is configured and there are real committee runs
+    to look at, that's the point to revisit tuning, not before, since
+    there was still no real usage signal to tune against during v1.0's
+    own development (no live LLM verification — see §14).
+13. **A numeric cross-check for the Fundamental Analyst** (and, now,
+    potentially every specialist) — comparing LLM-stated financial
+    figures against already-persisted `financials` data
+    (`FinancialRatio`/`ProfitAndLoss`) as an additional hallucination
+    guard, deliberately deferred out of v0.9's scope (an explicit
+    `AskUserQuestion` decision during v0.9 planning — see
     `FUNDAMENTAL_ANALYST_DESIGN.md` §9 point 6) in favor of shipping the
-    other guardrails (citation enforcement, investment-advice filtering,
-    the evidence-confidence floor) first. Flagged in that design doc as
-    the module's most consequential known gap at launch — the first
-    thing to revisit once real Fundamental Analyst output exists.
-12. **Findings caching / cost optimization for `ai_agents`** — every
-    `POST /agents/fundamental/{symbol}` call re-runs the full pipeline
-    including the LLM call, unlike `knowledge_layer`'s checksum-gated
-    skip (§4 point 6). A future version could cache by a checksum of the
-    evidence actually shown to the model, the same `content_checksum`
-    idiom `KnowledgeEmbedding` already uses — not built in v0.9 without
-    real cost data to justify it.
-13. **Auto-chaining `generate_fundamental_analysis`** from upstream
-    syncs, once its OpenAI API cost profile has been explicitly
-    discussed with the user — the same reasoning that kept
-    `generate_knowledge_embeddings` (§9's v0.7 entry) and now
-    `generate_fundamental_analysis` (§9) manually triggered only, not
-    auto-wired, in their first versions.
+    other guardrails first. **v1.0 partially addresses this for
+    Valuation specifically** (a real, deterministically-computed P/E
+    ratio is now presented as evidence, §11's v1.0 entry) but this is
+    narrower than a general cross-check against every claim any
+    specialist makes — still the module's most consequential known gap,
+    now spread across more agents, not resolved.
+14. **Findings caching / cost optimization for `ai_agents`** — every
+    `POST /agents/fundamental/{symbol}` call (and now every
+    `POST /reports` committee run, which costs up to 6x as many LLM
+    calls) re-runs the full pipeline including every LLM call, unlike
+    `knowledge_layer`'s checksum-gated skip (§4 point 6). A future
+    version could cache by a checksum of the evidence actually shown to
+    the model, the same `content_checksum` idiom `KnowledgeEmbedding`
+    already uses — not built without real cost data to justify it, and
+    now more valuable to build given v1.0's real multiplier on LLM spend.
+15. **Auto-chaining `generate_fundamental_analysis`/`run_investment_committee`
+    (and the other four new v1.0 generation tasks)** from upstream syncs,
+    once their OpenAI API cost profile has been explicitly discussed with
+    the user — the same reasoning that kept `generate_knowledge_embeddings`
+    (§9's v0.7 entry) and `generate_fundamental_analysis` (§9) manually
+    triggered only, not auto-wired, in their first versions.
+16. **Concurrent specialist execution for `run_investment_committee`.**
+    v1.0 deliberately runs all five specialists sequentially within one
+    Celery task, since every specialist's `AIAgentsService` currently
+    shares the orchestrator's one `AsyncSession` and a single
+    `AsyncSession` is not safe for concurrent coroutine use (see
+    `orchestrator.py`'s own module docstring). A real latency win is
+    possible here (up to 5x on the specialist phase) but needs each
+    specialist on its own session — a bigger architectural change than
+    v1.0's scope, not attempted without first discussing whether the
+    added complexity (session-per-specialist, partial-write coordination
+    on failure) is worth it once real committee-run latency data exists.
+17. **Compliance's deterministic filter — widen the pattern list, or add
+    a second, narrowly-scoped LLM review pass.** Confirmed
+    deterministic-only for v1.0 (§13 point 1d) specifically to avoid
+    building speculative robustness without a real false-negative signal
+    to justify it — revisit only once real committee output surfaces a
+    case the current `_ADVICE_PATTERNS` regex list actually misses, the
+    same "don't build ahead of real usage" reasoning already applied to
+    `retrieval_engine`'s scoring formula (item 12) and the Fundamental
+    Analyst's numeric cross-check (item 13).
+18. **Tuning `COMMITTEE_EVIDENCE_QUERY` and `SHARED_EVIDENCE_LIMIT=60`**
+    (`orchestrator.py`) and confidence-aggregation weighting beyond the
+    v1.0 equal-weight default (`committee/confidence.py`) — both
+    documented starting guesses, not empirically validated, the same
+    "revisit once real usage exists" caveat as `RECENCY_HALF_LIFE_DAYS`.
 
 ---
 
@@ -1130,6 +1338,26 @@ deliberate conversation with the user first)
     gracefully pattern, not an oversight; a fabricated "finding" is worse
     than an explicit error. Changing any of these needs a fresh explicit
     conversation with the user first, the same as 1a/1b.
+1d. **v1.0's specific Investment Committee decisions are themselves
+    frozen** (each was an explicit `AskUserQuestion` decision during
+    v1.0 planning): retrieval is **one shared call per committee run**,
+    not one per specialist — distributed via the additive
+    `shared_evidence` constructor parameter (§3). Compliance is
+    **deterministic-only** — no second LLM review pass (§6/§9 of
+    `INVESTMENT_COMMITTEE_DESIGN.md`). Quorum requires **Fundamental
+    Analyst specifically** to succeed, not just any non-zero count of
+    specialists. Valuation **computes a real P/E ratio** but **never**
+    computes P/B (permanently blocked on missing shares-outstanding
+    data, confirmed via `AskUserQuestion` during implementation, not
+    approximated with a non-per-share proxy — §12 item 2). The Chair
+    **never resolves cross-specialist disagreement into a verdict, a
+    score, or anything resembling a recommendation** — surfacing tension
+    transparently is itself the useful output. Committee-level
+    confidence is **never purely LLM-self-reported**, the identical
+    single-agent rule from 1c extended one layer up
+    (`min(mean(succeeded specialists), bounded(chair.llm_confidence))`).
+    Changing any of these needs a fresh explicit conversation with the
+    user first, the same as 1a/1b/1c.
 2. **One shared `Base`, one Postgres database.** Never introduce a second
    declarative base or a second database/schema without explicit sign-off.
 3. **The provider/factory/DTO abstraction is not optional.** Business
@@ -1422,11 +1650,52 @@ deliberate conversation with the user first)
   guaranteed-complete one) — not a bug to silently "fix" by expanding the
   pattern list without discussing whether a more robust approach (e.g. a
   second, narrowly-scoped classification pass) is warranted.
-- **Eight of the nine specialist agents named in `agents/base.py`'s
-  docstring remain unimplemented**, and `InvestmentCommitteeOrchestrator`
-  remains a 100% placeholder (`POST /reports` still always `501`s) — v0.9
-  built exactly one specialist agent end-to-end, not the whole
-  multi-agent system. See §12 item 1.
+- **As of v1.0, only Macro Economy and Portfolio Analyst remain
+  unimplemented** of the nine specialist agents originally named in
+  `agents/base.py`'s docstring — both explicitly, deliberately out of
+  scope (§12 item 1), not oversights. `InvestmentCommitteeOrchestrator`
+  is real as of v1.0 (`POST /reports` no longer `501`s).
+- **No live OpenAI API verification for any of v1.0's five new LLM call
+  sites** (Technical, Valuation, News & Sentiment, Risk, and the
+  Committee Chair) — the same carried-forward gap from v0.7 onward, no
+  `OPENAI_API_KEY` in the verification sandbox. Compensated the same way
+  v0.9 was: the real orchestrator, real `RetrievalEngineService`, and
+  real Postgres data for TCS were run end-to-end with every LLM call
+  stubbed (one stub instance branching on each system prompt's opening
+  sentence), confirming the shared-retrieval wiring, quorum enforcement,
+  partial degradation, cross-specialist citation dedup, and Compliance's
+  fail-closed rejection all work correctly against genuine evidence
+  identities. What remains genuinely unverified is real model output
+  quality/behavior across all five new prompts and the Chair's synthesis
+  prompt — the same category of gap v0.9's own `FundamentalAnalystAgent`
+  had at launch, now with a larger surface area. **Whoever first
+  configures a real `OPENAI_API_KEY` should do one live `POST /reports`
+  pass against a company with real financials, technical indicators,
+  filings, and news data before fully trusting committee output in
+  production.**
+- **No P/B ratio, permanently, without a schema/ingestion change.** See
+  §12 item 2 and §13 point 1d — this platform ingests no
+  shares-outstanding figure anywhere. Every Valuation Analyst finding
+  carries a disclosed caveat about it (`ratios.py`'s
+  `PB_UNAVAILABLE_CAVEAT`) rather than a silently-omitted or
+  misleadingly-approximated value.
+- **Five specialists run sequentially per committee run, not
+  concurrently** — a real latency/cost accepted tradeoff (5-6 sequential
+  LLM round trips per `POST /reports` call), not an oversight, because
+  every specialist's `AIAgentsService` currently shares the
+  orchestrator's one `AsyncSession` (not safe for concurrent coroutine
+  use). See §12 item 16 for what a fix would require.
+- **The Chair's disagreement detection is LLM-reasoning-based, not a
+  deterministic semantic match.** Detecting whether a Technical
+  Analyst's momentum read and a Fundamental Analyst's growth read
+  actually conflict would need real semantic claim-matching to do well —
+  ironically the kind of similarity search `retrieval_engine` already
+  has for evidence, but repurposing it for cross-agent claim-matching
+  was judged a stretch and out of scope for v1.0
+  (`INVESTMENT_COMMITTEE_DESIGN.md` §5). The Chair is simply asked, as
+  part of its structured output, to identify points of tension — subject
+  to the same "not live-verified" caveat as every other v1.0 LLM call
+  above.
 
 ---
 
@@ -1591,68 +1860,105 @@ Celery task exists for this module (§9)
 - `GET /portfolios`
 - `POST /portfolios`
 
-**`ai_agents`** — two route groups, added incrementally
-- `POST /reports` — orchestrator job API, still placeholder-only: always
-  ends in a `501` `NotImplementedYetError` once
-  `InvestmentCommitteeOrchestrator.request_analysis` runs; kept mounted so
-  the route shape is already correct for when it's implemented.
-- `POST /agents/fundamental/{symbol}` — added v0.9. Runs the Fundamental
-  Analyst for a company: retrieves ranked evidence via
-  `RetrievalEngineService`, calls the LLM behind the `LLMProvider`
-  abstraction, validates/guards the structured output, persists the
-  result to `agent_findings`, and links it into the Research Dossier.
-  Standard `202` + `{symbol, status: "queued", task_id}` response,
-  following every other `.../generate/` route's convention — an LLM call
-  is slow and costs real money, exactly the profile that convention
-  exists for.
-- `GET /agents/fundamental/{symbol}` — added v0.9. Reads the most
-  recently persisted `AgentFinding` for that company (`404` if none
-  exists yet — the response message includes the exact `POST` to run).
-  `result_json` is the full `FundamentalAnalysisResult` payload
-  (summary, strengths, concerns, resolved citations, confidence score,
-  evidence sufficiency, caveats) passed through as-is.
+**`ai_agents`** — six route groups
+- `POST /reports` — the Investment Committee job API. **Real as of
+  v1.0** (previously always `501`). Resolves `company_id` to a symbol
+  directly in the route handler and enqueues `run_investment_committee`
+  — standard `202` + `{job_id, status: "queued"}`.
+- `GET /reports/{symbol}` — added v1.0. Returns the full committee
+  bundle: the Chair's synthesized decision (`result_json` — summary,
+  findings, disagreements, confidence score, global citations, caveats,
+  `source_findings` manifest, `failed_specialists`) plus the Compliance
+  verdict (`compliance` — `{approved, reasons}`) read together. Returns
+  `404` if no committee decision exists yet **or** if the most recent
+  run was rejected by Compliance — a rejected draft is never served, the
+  same as if nothing had run (the rejection itself is still durably
+  persisted as an auditable `compliance_review` row, just never
+  returned here).
+- `POST|GET /agents/fundamental/{symbol}` — added v0.9, unchanged shape.
+  Runs/reads the Fundamental Analyst. `result_json` is the full
+  `FundamentalAnalysisResult` payload (summary, strengths, concerns,
+  resolved citations, confidence score, evidence sufficiency, caveats)
+  passed through as-is.
+- `POST|GET /agents/technical/{symbol}` — added v1.0. Identical shape to
+  the Fundamental pair; `result_json` is `TechnicalAnalysisResult`
+  (`summary`, `findings` with `stance`, `technical_read`, citations,
+  confidence, caveats).
+- `POST|GET /agents/valuation/{symbol}` — added v1.0. `result_json` is
+  `ValuationAnalysisResult` — may include one synthetic `computed_ratio`
+  citation (the deterministic P/E, §11/§13 point 1d) and always includes
+  the P/B-unavailable caveat.
+- `POST|GET /agents/news-sentiment/{symbol}` — added v1.0. `result_json`
+  is `NewsSentimentAnalysisResult`.
+- `POST|GET /agents/risk/{symbol}` — added v1.0. `result_json` is
+  `RiskAnalysisResult`.
+  Every `POST` above follows the standard `202` +
+  `{symbol, status: "queued", task_id}` `.../generate/`-style response;
+  every `GET` reads the most recently persisted `AgentFinding` for that
+  `(company, agent_code)` (`404` if none exists yet — the response
+  message includes the exact `POST` to run). **Compliance has no direct
+  endpoint** — it has no per-company evidence-retrieval story of its
+  own (it reviews the Chair's synthesized text, not raw evidence), so
+  its verdict is only ever visible via `GET /reports/{symbol}`.
 
 ---
 
-## 17. Version 0.10 — Specification Status
+## 17. Version 1.1 — Specification Status
 
-**No Version 0.10 specification has been given by the user as of this
+**No Version 1.1 specification has been given by the user as of this
 document's last update.** Do not infer one and do not start implementing
-anything under a "v0.10" label without first getting an explicit,
-detailed spec from the user, the same way v0.3 through v0.9 each began
+anything under a "v1.1" label without first getting an explicit,
+detailed spec from the user, the same way v0.3 through v1.0 each began
 with one (see §15 point 3 for the established rhythm: architecture review
 first, user confirms scope, then implement).
 
-§12 (Current Roadmap) lists the candidate next-step directions already
-identified from what v0.4 through v0.9 were each explicitly built to
-enable — more `ai_agents` specialist agents and/or the Investment
-Committee orchestrator itself (§12 item 1), a real filings-discovery
-provider, a second news provider, real authentication, portfolio
-analytics, frontend wiring, raw document storage, a pgvector ANN index,
-revisiting `retrieval_engine`'s scoring formula now that a real consumer
-exists, a numeric cross-check for the Fundamental Analyst, findings
-caching, and auto-chaining `generate_fundamental_analysis` — roughly in
-dependency order. These are **candidates the user has not yet chosen
-from or approved**, not a queued backlog to work through automatically.
-When a new conversation picks this up, the first step is asking the user
-which of these (or something else entirely) Version 0.10 should be, not
-assuming §12's ordering is a decision.
+**Version 1.0 (Investment Committee) is complete** — see §11's v1.0 entry
+for the full delivered scope (five specialist agents, the Committee
+Chair, deterministic Compliance, a real `InvestmentCommitteeOrchestrator`,
+zero new tables), §13 point 1d for its frozen decisions, and §14 for its
+known limitations (no P/B, no live OpenAI verification for the five new
+LLM call sites, sequential specialist execution).
 
-If Version 0.10 turns out to be another `ai_agents` specialist agent:
-read `ai_agents/agents/fundamental/` in full first — it is the intended
-template (§12 item 1) — and read §13 points 1 and 1c carefully;
-`FundamentalAnalystAgent`'s guardrails (citation enforcement, the
-investment-advice filter, the two-part confidence score, the fail-closed-
-not-degrade-gracefully asymmetry with `retrieval_engine`) are frozen
-decisions for *that* agent, not necessarily the only valid design for a
-different agent's domain (e.g. a Technical Analyst's "is there enough
-evidence" question looks nothing like "is there a financial statement"),
-but the *pattern* of deterministic, non-LLM guardrails wrapping every LLM
-call should be treated as the house style going forward, not something
-each new agent reinvents from scratch. If Version 0.10 turns out to be
-the Investment Committee orchestrator itself: this document should not be
-read as having pre-approved any particular orchestrator design — conflict
-detection, weighted scoring, a Findings Store schema, and the
-synthesis/Compliance-Agent pass all remain fully unscoped (see §12 item 1
-and `FUNDAMENTAL_ANALYST_DESIGN.md` §13) and need their own explicit spec
-and architecture-review pass, the same as every version before it.
+§12 (Current Roadmap) lists the candidate next-step directions already
+identified — Macro Economy and Portfolio Analyst agents (both explicitly
+deferred from v1.0's own scope), a shares-outstanding data source to
+unblock a real P/B ratio, a real filings-discovery provider, a second
+news provider, real authentication, portfolio analytics, frontend
+wiring, raw document storage, a pgvector ANN index, revisiting
+`retrieval_engine`'s scoring formula now that five specialists plus a
+Chair are real consumers, a numeric cross-check for every specialist
+(not just Valuation's partial P/E-based one), findings caching, further
+auto-chaining, concurrent specialist execution, widening Compliance's
+deterministic filter, and tuning the shared-retrieval query/limit and
+confidence-aggregation weighting — roughly in dependency order. These
+are **candidates the user has not yet chosen from or approved**, not a
+queued backlog to work through automatically. When a new conversation
+picks this up, the first step is asking the user which of these (or
+something else entirely) Version 1.1 should be, not assuming §12's
+ordering is a decision.
+
+If Version 1.1 turns out to be Macro Economy or Portfolio Analyst: both
+were explicitly scoped *out* of v1.0 for real, substantive reasons (no
+macro data source exists anywhere in this codebase; Portfolio needs a
+fundamentally different, portfolio/user-level `AgentContext` shape and
+is blocked on real auth) — see §12 item 1 and
+`INVESTMENT_COMMITTEE_DESIGN.md` §1. Neither is a simple "copy the
+Technical Analyst template" exercise the way Technical/Valuation/News/
+Risk were for v1.0; each needs its own real spec.
+
+If Version 1.1 touches the Investment Committee itself (Compliance
+widening, concurrency, evidence-query tuning, confidence weighting):
+read `INVESTMENT_COMMITTEE_DESIGN.md` in full first, then §13 point 1d
+carefully — the four confirmed decisions there (shared retrieval,
+deterministic-only Compliance, Fundamental-must-succeed quorum, no P/B)
+are frozen, not defaults to casually revisit without the same explicit
+conversation that set them.
+
+If Version 1.1 is another new specialist agent style module elsewhere in
+this codebase: `ai_agents/agents/technical/` (or any of the other four)
+is now as valid a template to copy as `fundamental/` was — read whichever
+is closest in evidence shape to the new domain, and read §13 points 1,
+1c, and 1d carefully; the *pattern* of deterministic, non-LLM guardrails
+wrapping every LLM call (now living in `ai_agents/guardrails.py`, shared,
+not duplicated) is the house style going forward, not something each new
+agent reinvents from scratch.

@@ -49,6 +49,20 @@ class FinancialStatementRepository:
 
     # -- reads -------------------------------------------------------
 
+    async def get_by_id(self, statement_id: uuid.UUID) -> FinancialStatement | None:
+        """Added for ai_agents' Valuation Analyst (v1.0): retrieval_engine's
+        evidence items carry a `financial_statement`'s id but not its
+        detail rows (eps_basic etc.), so the agent resolves the id of its
+        highest-relevance financial_statement evidence item back to the
+        full statement (with profit_and_loss eager-loaded) to compute a
+        real P/E ratio -- see agents/valuation/ratios.py."""
+        result = await self._session.execute(
+            select(FinancialStatement)
+            .options(*_DETAIL_OPTIONS)
+            .where(FinancialStatement.id == statement_id)
+        )
+        return result.scalar_one_or_none()
+
     async def get_latest_statement(
         self, company_id: uuid.UUID, period_type: str, fiscal_year: int, fiscal_period: str
     ) -> FinancialStatement | None:
