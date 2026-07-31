@@ -5,27 +5,102 @@
 :root {
   --background: 0 0% 100%;
   --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
   --primary: 221 83% 53%;
   --primary-foreground: 210 40% 98%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 47% 11%;
   --muted: 210 40% 96%;
   --muted-foreground: 215 16% 47%;
+  --accent: 221 83% 96%;
+  --accent-foreground: 221 83% 40%;
   --border: 214 32% 91%;
-  --radius: 0.5rem;
+  --ring: 221 83% 53%;
+  --success: 142 71% 35%;
+  --success-foreground: 355 100% 100%;
+  --success-bg: 142 71% 95%;
+  --warning: 32 95% 44%;
+  --warning-foreground: 355 100% 100%;
+  --warning-bg: 38 92% 95%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 355 100% 100%;
+  --destructive-bg: 0 86% 97%;
+  --radius: 0.65rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: 222 47% 11%;
+    --background: 222 47% 8%;
     --foreground: 210 40% 98%;
+    --card: 222 44% 11%;
+    --card-foreground: 210 40% 98%;
     --primary: 217 91% 60%;
     --primary-foreground: 222 47% 11%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
     --muted: 217 33% 17%;
     --muted-foreground: 215 20% 65%;
+    --accent: 217 60% 18%;
+    --accent-foreground: 213 94% 78%;
     --border: 217 33% 20%;
+    --ring: 217 91% 60%;
+    --success: 142 60% 45%;
+    --success-foreground: 144 61% 8%;
+    --success-bg: 142 40% 14%;
+    --warning: 38 92% 55%;
+    --warning-foreground: 32 81% 10%;
+    --warning-bg: 38 60% 15%;
+    --destructive: 0 72% 60%;
+    --destructive-foreground: 0 60% 10%;
+    --destructive-bg: 0 45% 16%;
   }
+}
+
+* {
+  border-color: hsl(var(--border));
 }
 
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
+}
+
+::selection {
+  background-color: hsl(var(--primary) / 0.25);
+}
+
+.animate-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--muted) / 0.6) 37%,
+    hsl(var(--muted)) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
 }
