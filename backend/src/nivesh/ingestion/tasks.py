@@ -18,6 +18,8 @@ import asyncio
 import logging
 import uuid
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from nivesh.ai_agents.agents.fundamental.agent import FundamentalAnalystAgent
 from nivesh.ai_agents.agents.news_sentiment.agent import NewsSentimentAnalystAgent
 from nivesh.ai_agents.agents.risk.agent import RiskAnalystAgent
@@ -58,6 +60,8 @@ from nivesh.knowledge_layer.service import KnowledgeLayerService
 from nivesh.market_data.providers.factory import get_market_data_provider
 from nivesh.market_data.repository import CorporateActionRepository, HistoricalOHLCVRepository
 from nivesh.market_data.service import MarketDataService
+from nivesh.market_universe.repository import UniverseConstituentRepository
+from nivesh.market_universe.service import MarketUniverseService
 from nivesh.news_intelligence.providers.factory import get_news_provider
 from nivesh.news_intelligence.repository import NewsArticleRepository
 from nivesh.news_intelligence.service import NewsIntelligenceService
@@ -826,6 +830,7 @@ async def _generate_planned_portfolio(portfolio_id: str) -> dict:
                 finding_repository=AgentFindingRepository(session),
                 portfolio_repository=PlannedPortfolioRepository(session),
                 orchestrator=orchestrator,
+                universe_repository=UniverseConstituentRepository(session),
             )
             await service.generate(uuid.UUID(portfolio_id))
             return {"portfolio_id": portfolio_id}
@@ -864,3 +869,107 @@ def generate_planned_portfolio(self, portfolio_id: str) -> dict:
     except Exception as exc:
         logger.exception("generate_planned_portfolio_failed", extra={"portfolio_id": portfolio_id})
         raise self.retry(exc=exc) from exc
+
+
+def _build_market_universe_service(session: AsyncSession) -> MarketUniverseService:
+    """Shared construction, used by both universe tasks below -- avoids
+    repeating this module's longest constructor call twice."""
+    return MarketUniverseService(
+        session=session,
+        universe_repository=UniverseConstituentRepository(session),
+        company_repository=CompanyRepository(session),
+        exchange_repository=ExchangeRepository(session),
+        ohlcv_repository=HistoricalOHLCVRepository(session),
+        indicator_repository=TechnicalIndicatorRepository(session),
+        statement_repository=FinancialStatementRepository(session),
+        category_repository=FilingCategoryRepository(session),
+        source_repository=FilingSourceRepository(session),
+        filing_repository=CorporateFilingRepository(session),
+        news_repository=NewsArticleRepository(session),
+        embedding_repository=KnowledgeEmbeddingRepository(session),
+        dossier_repository=ResearchDossierRepository(session),
+        finding_repository=AgentFindingRepository(session),
+    )
+
+
+async def _sync_universe_constituent(index_name: str, symbol: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            service = _build_market_universe_service(session)
+            await service.sync_one(index_name, symbol)
+            return {"index_name": index_name, "symbol": symbol}
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.sync_universe_constituent",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def sync_universe_constituent(self, index_name: str, symbol: str) -> dict:
+    """Populates market data, financials, corporate filings, news,
+    technical indicators, and knowledge embeddings for one Market
+    Universe constituent (v1.4) -- directly composing the existing
+    per-domain services (`MarketUniverseService.ingest_constituent`,
+    `market_universe/service.py`), zero duplicated business logic.
+    Deliberately does not extend into `document_intelligence`'s filing
+    extraction step, out of this version's explicit scope.
+
+    Unlike every task above, a failure here never raises past this
+    wrapper -- `MarketUniverseService.sync_one` catches its own
+    exceptions and records `ingestion_status="failed"` with a reason on
+    the constituent row, the same "never take down the batch, leave a
+    terminal explained state" shape `generate_planned_portfolio` already
+    established, since a syncing a whole 50-company universe should not
+    abort because one symbol's provider call failed.
+    """
+    try:
+        return asyncio.run(_sync_universe_constituent(index_name, symbol))
+    except Exception as exc:
+        logger.exception(
+            "sync_universe_constituent_failed", extra={"index_name": index_name, "symbol": symbol}
+        )
+        raise self.retry(exc=exc) from exc
+
+
+async def _screen_universe(index_name: str, top_n: int) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            service = _build_market_universe_service(session)
+            screened_in, committee_needed = await service.screen(index_name, top_n)
+            return {
+                "index_name": index_name,
+                "screened_in": screened_in,
+                "committee_needed": committee_needed,
+            }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.screen_universe",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def screen_universe(self, index_name: str, top_n: int) -> dict:
+    """Deterministically scores every `ready` constituent (evidence
+    completeness only, no LLM judgement -- see
+    `MarketUniverseService.compute_score`), marks the top `top_n` as
+    `is_screened_in`, and enqueues `run_investment_committee` (unchanged)
+    only for those that don't already have a fresh report -- the v1.4
+    "only the strongest candidates proceed to Investment Committee
+    analysis" requirement. Screening itself is synchronous/cheap; only
+    the committee fan-out is deferred to further tasks.
+    """
+    try:
+        result = asyncio.run(_screen_universe(index_name, top_n))
+    except Exception as exc:
+        logger.exception("screen_universe_failed", extra={"index_name": index_name})
+        raise self.retry(exc=exc) from exc
+
+    for symbol in result["committee_needed"]:
+        run_investment_committee.delay(symbol)
+    return result

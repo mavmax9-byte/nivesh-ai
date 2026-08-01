@@ -5,9 +5,11 @@ conversation (or a new human engineer) should be able to read this file and
 continue development with zero loss of context. Written as an onboarding
 document for a Senior Staff Engineer joining the project.
 
-Last updated: after v1.3 (AI Investment Planner -- the user's own request
-labeled this "Version 1.1", a product-layer label distinct from this
-document's internal v0.x/v1.x numbering; see INVESTMENT_PLANNER_DESIGN.md).
+Last updated: after v1.4 (Market Universe -- expands the planner from a
+single-company sandbox into a tracked, deterministically-screened Nifty
+50 universe; see §11's v1.4 entry). The user's own request for v1.3 was
+labeled "Version 1.1", a product-layer label distinct from this
+document's internal v0.x/v1.x numbering; see INVESTMENT_PLANNER_DESIGN.md.
 
 ---
 
@@ -126,7 +128,7 @@ nivesh-ai/
 │
 ├── backend/
 │   ├── pyproject.toml           # uv-managed, see §"Dependencies" below
-│   ├── alembic/versions/        # 0001..0008, see §4
+│   ├── alembic/versions/        # 0001..0011, see §4
 │   ├── src/nivesh/
 │   │   ├── main.py              # create_app()
 │   │   ├── config.py            # pydantic-settings Settings, get_settings()
@@ -157,6 +159,8 @@ nivesh-ai/
 │   │   │                        # 5 specialists, Chair, Compliance, real orchestrator
 │   │   ├── portfolio_planner/   # v1.3: AI Investment Planner -- a product layer over
 │   │   │                        # ai_agents, zero new LLM calls of its own (§3a below)
+│   │   ├── market_universe/     # v1.4: Market Universe -- tracks Nifty 50 membership,
+│   │   │                        # orchestrates ingestion, deterministic screening (§3a)
 │   │   └── ingestion/tasks.py   # every Celery task, one shared file
 │   └── tests/                   # mirrors src/ 1:1 by domain, plus conftest.py
 │
@@ -252,6 +256,32 @@ project's convention, going forward: a hook's dependency array must
 always have the exact same length across every render of a given
 component instance -- gate the *body* of the fetcher/effect on a
 condition, never the deps array's own shape).
+
+**v1.4 (Market Universe) added zero frontend code.** The existing
+`/planner` and `/planner/[id]` pages are entirely data-driven (they
+render whatever `portfolio.holdings` the backend returns, one
+`HoldingCard` per entry) -- once the backend universe holds multiple
+real, screened, committee-analyzed companies, the same unmodified UI
+renders a genuine multi-company portfolio. Live-verified: `/companies`
+lists all 9 real companies ingested during v1.4's own verification with
+correct real sector classifications (yfinance-sourced, e.g. "Financial
+Services" for HDFCBANK, "Energy" for RELIANCE), and a generated
+`/planner/[id]` portfolio rendered 3 real holdings (TCS, INFY, WIPRO)
+with real citations and correct same-sector cap redistribution (each
+capped at 12%, summing to exactly the 35% Technology sector cap for a
+balanced risk profile) -- the first live exercise of that code path;
+previously only unit-tested with mocks (§14).
+
+Backend-wise, `market_universe/` (v1.4) follows the same internal shape
+`portfolio_planner` (v1.3) already established --
+`models.py`/`repository.py`/`service.py`/`schemas.py`/`router.py`, no
+`providers/` package of its own (it composes six sibling modules'
+existing services, the same "reuse via composition" idiom
+`portfolio_planner` and `retrieval_engine` already established) --
+plus one extra file, `constituents.py`, holding the static Nifty 50
+symbol seed list (`NIFTY_50_SYMBOLS`, a point-in-time snapshot, not
+synced from a live index-membership provider -- see its own module
+docstring and §14).
 
 Every domain module that ingests external data (`market_data`, `financials`,
 `corporate_filings`, `document_intelligence`, `news_intelligence`,
@@ -541,6 +571,16 @@ table, so a real FK isn't possible.
    `POST /agents/fundamental/{symbol}` call re-runs the full pipeline,
    including the LLM call — a real cost tradeoff, accepted for this
    foundational version (see §14).
+7. **Mutable status-tracking row, updated in place** (`market_universe`'s
+   `UniverseConstituent`, added v1.4): unlike every pattern above, this
+   row is not a derived *result* at all — it tracks the *process* of
+   ingesting and screening one company (`ingestion_status`,
+   `screening_score`, `is_screened_in`), updated directly (plain
+   `UPDATE`, not an `ON CONFLICT` upsert or a new version) as that
+   process moves through its states. `company_id` is nullable and only
+   populated once ingestion first succeeds — a constituent legitimately
+   exists in a "tracked but never yet ingested" state with no `Company`
+   row behind it yet.
 
 ### Reference/lookup tables
 
@@ -1030,7 +1070,22 @@ def do_the_work(self, arg: str) -> dict:
   `generate_technical_indicators`, `generate_knowledge_embeddings`,
   `generate_fundamental_analysis`, `generate_technical_analysis`,
   `generate_valuation_analysis`, `generate_news_sentiment_analysis`,
-  `generate_risk_analysis`, `run_investment_committee`.
+  `generate_risk_analysis`, `run_investment_committee`,
+  `generate_planned_portfolio` (v1.3), `sync_universe_constituent`,
+  `screen_universe` (v1.4). `sync_universe_constituent` and
+  `screen_universe` are the first tasks in this file that construct a
+  service (`MarketUniverseService`) via a small shared helper function
+  (`_build_market_universe_service`, given how many repositories its
+  constructor takes) rather than inlining construction in each task's
+  own `async def _xxx` body — a purely mechanical dedup, not a new
+  pattern; every other task still inlines its own construction.
+  `screen_universe` is the one task in this file whose Celery wrapper
+  does real post-processing on its result (`.delay()`-ing
+  `run_investment_committee` for each symbol its `committee_needed`
+  list names) rather than just returning it, the same "wrapper enqueues
+  the next step" shape `sync_company_market_data`'s auto-chain already
+  uses, applied here to a *set* of follow-up symbols instead of one
+  fixed next task.
   **v0.8 (Retrieval Engine) added no Celery task** — it does no
   background/ingestion work, only synchronous reads (see §7), so there
   was nothing to queue.
@@ -1175,7 +1230,7 @@ pass, not during design or code review — see §5/§14.
 
 ---
 
-## 11. Completed Versions (v0.1 – v1.3)
+## 11. Completed Versions (v0.1 – v1.4)
 
 | Version | Delivered | Key modules/tables |
 |---|---|---|
@@ -1200,11 +1255,14 @@ pass, not during design or code review — see §5/§14.
 
 | **v1.3 — AI Investment Planner** | A new *product* layer on top of the unchanged Investment Committee, per a design-first request the user explicitly labeled "Version 1.1" (a product-facing label, not this document's internal numbering) -- design produced and confirmed first (`INVESTMENT_PLANNER_DESIGN.md`, mirroring the `FUNDAMENTAL_ANALYST_DESIGN.md`/`INVESTMENT_COMMITTEE_DESIGN.md` precedent), then implemented exactly as designed, with an explicit "reuse existing modules, no new AI agents/databases/ingestion pipelines unless there is no viable alternative" constraint -- none were needed. Answers "I have ₹X, where should I invest and why?" for a retail (not analyst) user: capital + risk profile (conservative/balanced/growth) + horizon + optional sector exclusions in, an illustrative, evidence-cited allocation out. **The core design principle, carried through every layer of the implementation**: this is a deterministic aggregation/ranking/allocation pass over already-guardrailed Investment Committee output -- it makes zero new LLM calls of its own, reusing `InvestmentCommitteeOrchestrator` unchanged (the exact class `ingestion/tasks.py`'s own `run_investment_committee` uses) to backfill any candidate missing a report. New backend module `portfolio_planner/` (models/schemas/repository/service/router, the same shape every domain module follows) owns two new tables (`planned_portfolios`, `planned_portfolio_holdings`, migration `0010`) -- deliberately **not** a reuse of the existing `portfolios`/`holdings` tables, which represent a user's real, owned holdings behind placeholder auth; a planned portfolio is an AI-generated proposal, conceptually distinct, and per the design's own decision needs no auth at all this version. Universe selection is a two-tier funnel (§4 of the design doc): a free Tier 1 filter (active, sector-permitted, has a financial statement -- mirrors Fundamental Analyst's own quorum requirement, added as one new additive method, `FinancialStatementRepository.exists_for_company`) followed by a capped Tier 2 shortlist, before any expensive Tier 3 committee generation -- since generating a report costs 5-6 real LLM calls and screening the whole company table that way isn't viable. Ranking is a weighted composite (confidence score, evidence sufficiency, specialist stance tally, disagreement count) with risk-profile-dependent weights; allocation is score-weighted within per-position and per-sector caps, explicitly designed and tested to leave an honest unallocated residual rather than force 100% deployment past a cap -- the only real candidate pool in this sandbox is exactly one company, so this degenerate case is the one live-exercised, not a theoretical edge. Explanations are templated compressions of each committee's own `summary`/citations, not new LLM reasoning. Rebalancing is a deliberate, honestly-labeled v1.1-scope placeholder (`GET .../rebalance` always returns `{available: false, message: "..."}`), not a stub bug -- real drift/time/evidence-change triggers need portfolios accumulating history this version doesn't have yet. **A real, subtle bug was caught and fixed via the same `get_latest`-before-a-write identity-map trap v1.2 first found**: this service reads a candidate's committee report to check freshness *before* possibly regenerating it, so `_ensure_fresh_report` calls `session.expire_all()` before invoking the orchestrator -- otherwise not just this service's own later read, but the orchestrator's *own internal* post-upsert read inside `_link_to_research_dossier`, would silently return a stale cached object. **Two more real bugs were found via live browser verification, not static analysis**: a client-side capital-validation message never actually rendered, because the `<input min={1}>` HTML attribute triggered native browser constraint validation before React's own `onSubmit` handler ever ran (fixed by removing the redundant native constraint and trusting the existing, better-explained JS validation as the single source of truth); and the Portfolio Review page's "check for rebalancing" lazy-fetch button passed a *variable-length* dependency array to `useAsync` (`checked ? [id, checked] : []`), which both violates React's Rules of Hooks and, separately, didn't actually gate anything (deps only control re-fetching, not the initial mount fetch) -- fixed by keeping a constant-length deps array and gating the real network call inside the fetcher itself. Frontend reuses the entire existing design system (`Badge`, `ConfidenceMeter`, `EvidenceSufficiencyBadge`, `PageHeader`, `Card`, `Alert`, `Button`) and the `useAsync`/`usePolling` hooks unchanged -- two new pages (`/planner` input screen, `/planner/[id]` generating/ready/failed/review screen) and one new component (`HoldingCard`). Verified against the real pipeline end-to-end: a real committee-backed allocation generated and rendered correctly (real ₹ amounts, real citations, real caveats), the risk-profile fallback path live-exercised (Conservative correctly excluded TCS's own genuinely-insufficient-evidence Risk Analyst finding, then fell back to showing it anyway with an honest caveat, exactly as designed), and the empty-universe failure path live-exercised (excluding TCS's only sector correctly produces a clear, non-crashing failure state). 28 new backend tests (repository, service, API) plus 6 new Playwright e2e specs, all passing; all 9 pre-existing e2e specs still pass unchanged (no regression to any v1.0/v1.1/v1.2 functionality). | `planned_portfolios`, `planned_portfolio_holdings` |
 
-**Test count as of v1.3: 616 backend tests passing** (588 + 28 new,
+| **v1.4 — Market Universe** | Expands the platform from a single-company (TCS-only) planner into a real, multi-company one, per an explicit spec ("Build a Market Universe module... Reuse the existing ingestion pipeline... Implement deterministic screening so only the strongest candidates proceed to Investment Committee analysis... Keep the implementation additive"). New backend module `market_universe/` (same shape every domain module follows, no `providers/` package of its own -- it composes six sibling modules' existing services, the same "reuse via composition" idiom `portfolio_planner`/`retrieval_engine` already established) owns one new table, `universe_constituents` (migration `0011`), tracking a company's membership in a tracked index (`index_name`, today just `NIFTY50`, seeded from a static point-in-time symbol list in `constituents.py`), its ingestion progress (`pending`/`ingesting`/`ready`/`failed`), and a deterministic screening score. Two responsibilities, kept deliberately separate: **ingestion** (`MarketUniverseService.ingest_constituent`, reusing `MarketDataService`/`FinancialStatementService`/`CorporateFilingsService`/`NewsIntelligenceService`/`TechnicalIntelligenceService`/`KnowledgeLayerService`/`ResearchPipelineService` exactly as `ingestion/tasks.py`'s existing per-domain tasks already do, zero duplicated business logic) and **screening** (`MarketUniverseService.screen`, a deterministic evidence-completeness score over already-ingested data -- market data recency/depth, technical indicator presence, news/filings/embeddings depth, each capped and weighted -- no LLM judgement). Screening resolves the request's own "populate Investment Committee outputs for every company" / "only the strongest candidates proceed to Investment Committee" tension by reading the first as "the module is capable of it," explicitly gated by the second: only the top `top_n` scored constituents get `run_investment_committee` (unchanged) enqueued, and a repeat screen call skips any candidate whose report is already fresh (mirrors `portfolio_planner`'s own freshness window). `portfolio_planner/service.py`'s `_select_universe` gained one small, additive, backward-compatible change (§13 point 1g): its Tier 2 cap now sorts by `market_universe`'s screening score (when available) before falling back to the unchanged v1.3 alphabetical tie-break, so the strongest, already-screened companies are the ones a real user's portfolio request actually considers -- `_score_one`/`_apply_risk_filter`/`_allocate` (ranking and allocation proper) are completely untouched, per the request's own "reuse existing ranking and allocation logic" instruction. **Two real bugs were found and fixed via this version's own live verification, both before any committee LLM budget was misspent on more than one company**: (1) `ingest_constituent`'s six steps originally ran as one all-or-nothing sequence -- a real, reproducible `FinancialDataNotFoundError` from yfinance (genuinely missing quarterly financials for several large real NSE tickers, including RELIANCE/HDFCBANK/ICICIBANK at verification time -- a real upstream data-coverage gap, not a bug in this codebase) aborted the *other five, fully independent* steps too; fixed by wrapping each step after market data (the one prerequisite everything else depends on) in its own try/except via a small `_run_step` helper, so one flaky step never blocks unrelated ones -- confirmed live: all 9 verification companies got filings/news/indicators/embeddings regardless of financials outcome. (2) `screen`'s scoring originally had no financials gate at all, so a company with zero financial statements (which `portfolio_planner`'s own Tier 1 filter can *never* select, regardless of committee report quality) could still score well on other evidence and consume a real, unrecoverable Investment Committee run -- caught live (HCLTECH screened in and committee-generated on other evidence alone, confidence 0.30 with a failed specialist) before it could happen at scale; fixed by excluding financials-less candidates from `screen` entirely (mirroring Tier 1's own `exists_for_company` gate exactly), not just scoring them low. **Live-verified against the real pipeline**: seeded all 50 Nifty 50 symbols, ingested 9 real companies (TCS, INFY, WIPRO, HDFCBANK, ICICIBANK, RELIANCE, HCLTECH, ITC, HINDUNILVR) -- only TCS/INFY/WIPRO actually had usable financials given the real yfinance gap above, confirming the financials gate's necessity firsthand -- screened the universe (correctly ranking exactly those 3 in, all others out), generated real Investment Committee reports (WIPRO fresh, TCS/INFY reused already-fresh reports from earlier in the session), and generated a real multi-company portfolio: 3 holdings (WIPRO, INFY, TCS), each correctly capped at 12% summing to exactly the 35% Technology sector cap for a balanced risk profile -- the **first live exercise of `_allocate`'s multi-candidate, same-sector-cap-redistribution path**, previously only unit-tested with mocks (§14's v1.3 caveat). Confirmed in the browser: `/companies` lists all 9 real companies with correct real sector classifications, `/planner/[id]` renders the 3-holding portfolio correctly, and a pre-existing single-company report page (`/companies/INFY/report`) renders flawlessly for a company onboarded entirely through the new ingestion path -- zero frontend code was written or needed (§3). Zero regressions: 643 backend tests passing (616 + 27 new: `market_universe` repository/service/API tests plus 3 new `portfolio_planner._select_universe` tests for the screening-score sort), Ruff/mypy clean, and every pre-existing single-company page continued working unchanged. | `universe_constituents` |
+
+**Test count as of v1.4: 643 backend tests passing** (616 + 27 new,
 `pytest`, real Postgres with the `vector` extension installed). Ruff and
-mypy both clean across the whole `src/` tree (199 source files). All 15
-Playwright e2e specs pass (9 pre-existing + 6 new) against a live backend
-with real (non-stubbed) LLM-generated content.
+mypy both clean across the whole `src/` tree (207 source files). All 15
+Playwright e2e specs (unchanged from v1.3 -- v1.4 added no frontend code)
+pass against a live backend with real (non-stubbed) LLM-generated
+content.
 
 Commits (chronological, all on `main`):
 `6d5e038` init → `9c8ff36` gitignore → `f616f25` Sprint 4 → `fe5a0e4` ruff
@@ -1214,34 +1272,60 @@ intelligence → `084870c` feat(v0.6) technical intelligence → `9b0b621`
 feat(v0.7) knowledge layer → `1f8f4ac` feat(v0.8) retrieval engine →
 `989dd64` feat(v0.9) fundamental analyst → `9d906c1` feat(v1.0) investment
 committee → `d569d8b` feat(v1.1) MVP frontend → `cecea3b` feat(v1.2) live
-production verification →
-(v1.3 AI Investment Planner, see git log for the current hash).
+production verification → `bf7f013` feat(v1.3) AI Investment Planner →
+(v1.4 Market Universe, see git log for the current hash).
 
 ---
 
-## 12. Current Roadmap (v1.4 onwards)
+## 12. Current Roadmap (v1.5 onwards)
 
-Nothing beyond v1.3 (AI Investment Planner) has been scoped or approved
-yet. Do not start implementing v1.4 without an explicit spec from the
-user — this project's working pattern has consistently been:
-architecture review first (no code) → user confirms scope → implement →
-self-review → verify → commit/push. See §17 for the current
-production-readiness state.
+Nothing beyond v1.4 (Market Universe) has been scoped or approved yet.
+Do not start implementing v1.5 without an explicit spec from the user —
+this project's working pattern has consistently been: architecture
+review first (no code) → user confirms scope → implement → self-review
+→ verify → commit/push. See §17 for the current production-readiness
+state.
 
-v1.3 added its own natural next steps, layered on top of the list below
-(roughly in dependency order, nearest-first): (a) a real rebalancing
-engine behind the `GET /planner/portfolios/{id}/rebalance` placeholder
-(needs a trigger design — drift threshold? re-run on demand? scheduled?
-— and a decision on whether it re-invokes the Committee or just
-re-scores against already-fresh reports); (b) empirical tuning of the
-planner's ranking weights and position/sector caps (`_PROFILE_WEIGHTS`,
-`_MAX_POSITION_WEIGHT`, `_MAX_SECTOR_WEIGHT` in
-`portfolio_planner/service.py`), currently reasoned defaults never
-validated against real multi-candidate universes because this sandbox's
-seed data only supports a single real candidate (TCS) today; (c) result
-caching for the universe-selection LLM shortlist step, extending the
-same pre-existing `ai_agents` caching gap (item 12 below) that v1.3's
-own two-tier funnel was designed around rather than solved.
+v1.3's own next steps, most still open after v1.4 (roughly in
+dependency order, nearest-first): (a) a real rebalancing engine behind
+the `GET /planner/portfolios/{id}/rebalance` placeholder (needs a
+trigger design — drift threshold? re-run on demand? scheduled? — and a
+decision on whether it re-invokes the Committee or just re-scores
+against already-fresh reports) — **still open**, v1.4 did not touch
+this; (b) empirical tuning of the planner's ranking weights and
+position/sector caps (`_PROFILE_WEIGHTS`, `_MAX_POSITION_WEIGHT`,
+`_MAX_SECTOR_WEIGHT` in `portfolio_planner/service.py`) — **partially
+addressed**: v1.4's live verification exercised the multi-candidate,
+same-sector-cap path for the first time with real data (3 real
+Technology holdings correctly capped at the 35% sector limit), but the
+weight *values* themselves remain untuned starting guesses; (c) result
+caching for the universe-selection LLM shortlist step — **still open**,
+and now joined by a second instance of the same gap: `market_universe`'s
+own screening step has no caching either (re-scoring a company that
+hasn't changed since the last screen call is cheap, since screening
+itself makes no LLM calls, but repeatedly enqueuing `run_investment_committee`
+for genuinely-unchanged top-`N` candidates across many screen calls
+would not be, if not for the freshness check §13 point 1g already adds).
+
+v1.4 added its own natural next steps, layered on top of the list
+below: (d) **multi-index support** — `market_universe`'s `index_name`
+field is already generic (not hardcoded to `"NIFTY50"`), but only one
+seed list (`constituents.py`'s `NIFTY_50_SYMBOLS`) exists today; adding
+a second real index is a data addition, not a redesign; (e) **live
+index-membership sync** — the Nifty 50 seed list is a static, point-in-
+time snapshot (§14), not synced from a real index-membership provider;
+if reconstitutions need to be reflected automatically, that's a new
+external data source, the same "don't build ahead of what's asked"
+category as `corporate_filings`' still-missing real discovery provider
+(item 3 below); (f) **fixing the real yfinance quarterly-financials
+gap** found live during v1.4 (§14) — either a fallback provider for
+companies yfinance's quarterly statement endpoint doesn't cover, or a
+documented, permanent acceptance of partial universe coverage; (g)
+**empirical tuning of `market_universe`'s own screening weights**
+(`ScreeningComponents.total`'s 0.30/0.20/0.20/0.10/0.20 split in
+`market_universe/service.py`) — the same "reasoned default, not
+empirically validated" caveat every scoring constant in this codebase
+carries.
 
 **What v0.4 through v1.2 were explicitly building toward**: document
 extractions, news articles, technical indicators, a semantic retrieval
@@ -1545,6 +1629,34 @@ deliberate conversation with the user first)
     identity-map fix frozen at 1e above, reapplied here because this is
     a second call site with the identical read-then-possibly-rewrite-
     then-read shape.
+1g. **v1.4's specific screening decisions are frozen**: `market_universe`
+    makes **no LLM calls of its own** — screening is a deterministic
+    evidence-completeness score (market data recency/depth, technical
+    indicator presence, news/filings/embeddings depth) computed entirely
+    from data other modules already ingested, the same "reuse the
+    expensive step only for candidates that earn it" principle 1f
+    already established, applied one layer earlier (before a candidate
+    ever reaches the Committee, not before it reaches allocation). A
+    candidate **must** have at least one financial statement
+    (`FinancialStatementRepository.exists_for_company`) to be
+    screening-eligible at all — this is not a soft scoring input, it is
+    a hard exclusion, because `portfolio_planner`'s own Tier 1 filter
+    uses the identical gate and can never select a financials-less
+    company regardless of how good its committee report is; screening
+    it in would spend real, unrecoverable LLM budget on a candidate no
+    later portfolio request could ever use (found live during v1.4's
+    own verification — see §11's v1.4 entry and §14). `ingest_constituent`'s
+    six ingestion steps are independently fault-tolerant by design (one
+    step's failure is caught and logged, never aborts the other five) —
+    do not revert this to a single try/except around the whole method;
+    that was the exact shape that let one flaky upstream step (a real
+    yfinance quarterly-financials gap, §14) silently zero out four
+    unrelated, successfully-fetched evidence types for the same company.
+    `portfolio_planner._select_universe`'s new screening-score sort
+    preference is additive and optional (`universe_repository` defaults
+    to `None`) — do not make it a hard requirement without updating
+    every existing caller and test that constructs `PortfolioPlannerService`
+    without one.
 2. **One shared `Base`, one Postgres database.** Never introduce a second
    declarative base or a second database/schema without explicit sign-off.
 3. **The provider/factory/DTO abstraction is not optional.** Business
@@ -1948,21 +2060,53 @@ appended at the end of this section for what remains genuinely open.
   guardrail options above — revisit once real multi-candidate portfolios
   exist to tune against.
 - **v1.3's live verification only ever exercised a single-candidate
-  universe** (this sandbox's seed data has exactly one company, TCS,
-  with sufficient evidence to clear the planner's Tier 1 filter). The
-  single-candidate cap/residual behavior (§11's v1.3 entry) was
-  confirmed correct for that case across all three risk profiles, and
-  the empty-universe failure path was also confirmed live, but genuine
-  multi-candidate ranking, sector-cap redistribution across more than
-  one sector, and the Tier 2 LLM-shortlist step have never run against
-  real data with more than one eligible candidate — only unit-tested
-  with mocks. Not a known bug, an honest bound on what "live-verified"
-  means for this version, mirroring the TCS-only caveat above.
+  universe; v1.4 extended this to a real 3-candidate, same-sector case,
+  but multi-*sector* ranking remains unexercised.** v1.4's live
+  verification produced a real 3-holding portfolio (WIPRO/INFY/TCS, all
+  Technology) that correctly exercised same-sector cap redistribution
+  for the first time with real data (§11's v1.4 entry) — the
+  single-candidate cap/residual case (all three risk profiles) and the
+  empty-universe failure path remain confirmed from v1.3. What is
+  **still** only unit-tested, never live-verified: ranking/allocation
+  across candidates in *different* sectors (this sandbox's 3 real
+  committee-eligible companies are all Technology), and the Tier 2
+  LLM-shortlist step generally (this sandbox's real universe has never
+  exceeded `UNIVERSE_TIER2_CAP`, so the shortlist-capping logic itself
+  has no real case to exercise yet). Not a known bug, an honest bound on
+  what "live-verified" means for this version.
 - **The universe-selection Tier 2 LLM shortlist step makes no attempt
   at caching or reuse across separate planner runs** — every
   `POST /planner/portfolios` call that needs to shortlist candidates
   re-runs it from scratch, the same pre-existing `ai_agents` cost gap
   §12 item 12/(c) already documents, now with a second call site.
+- **The real yfinance dev provider's quarterly financial statements are
+  genuinely missing for several large, real NSE tickers** — observed
+  live during v1.4's own verification: `FinancialDataNotFoundError: No
+  quarterly financial statements found` for RELIANCE, HDFCBANK, and
+  ICICIBANK (3 of the 9 companies ingested), while the identical code
+  path succeeded cleanly for TCS, INFY, WIPRO, HCLTECH, ITC, and
+  HINDUNILVR. This is a real, third-party data-coverage gap (confirmed
+  via `financials/providers/yfinance_provider.py`'s own exception, not
+  a parsing bug in this codebase — see §12 item (f) for what a fix
+  would look like), in the same spirit as `corporate_filings`' NSE-
+  blocking gap already documented above. `market_universe`'s per-step
+  ingestion resilience (§13 point 1g) means this never blocks a
+  company's other five data types — only Tier 1 eligibility for the
+  planner, which is the correct outcome given that gate's purpose.
+- **The Nifty 50 seed list (`market_universe/constituents.py`) is a
+  static, point-in-time snapshot, not synced from a live index-
+  membership provider.** Index reconstitutions (additions/removals)
+  will not be reflected automatically — see §12 item (e). Two real
+  symbols (`M&M`, `BAJAJ-AUTO`) were deliberately left out of the seed
+  list rather than included with their real special characters, to
+  avoid an untested URL/routing edge case discovered only by inspection,
+  not by a live failure — swapped for `PIDILITIND` to keep the list at
+  50 names.
+- **`market_universe`'s own screening weights
+  (`ScreeningComponents.total`'s component weights,
+  `market_universe/service.py`) are reasoned starting defaults, not
+  empirically tuned** — the same caveat every scoring constant in this
+  codebase carries (§12 item (g)).
 
 ---
 
@@ -2187,44 +2331,77 @@ Celery task exists for this module (§9)
     `RebalanceRead` (`available: false` + an explanatory message). v1.3
     scope is placeholder-only; see §14.
 
+- **market_universe** (`/universe`) — added v1.4 (Market Universe).
+  Ops-facing; no frontend page calls these directly (§3).
+  - `POST /universe/seed` — idempotent, creates a tracked row for every
+    Nifty 50 symbol not already tracked under `index_name="NIFTY50"`;
+    existing rows (and their ingestion progress) are left untouched.
+    Returns `SeedResponse` (`seeded`, `total_tracked`), `200`.
+  - `POST /universe/sync` — body `{"symbols": [...] | null}`; enqueues
+    `sync_universe_constituent` per targeted symbol (every currently
+    `pending`/`failed` tracked constituent if `symbols` is omitted),
+    `202` with `SyncResponse` (`queued: string[]`).
+  - `POST /universe/screen` — body `{"top_n": int | null}` (defaults to
+    `DEFAULT_SCREEN_TOP_N`); enqueues the `screen_universe` task (which
+    does the scoring/ranking *and* any resulting `run_investment_committee`
+    enqueues inside one task, §9), `202` with `ScreenResponse`
+    (`{status: "queued", top_n}` — the response only confirms the
+    request was queued; poll `GET /universe` for the actual
+    `screening_score`/`is_screened_in` outcome once it completes).
+  - `GET /universe` — lists tracked constituents for an index (query
+    param `index_name`, default `NIFTY50`): `id`, `symbol`, `company_id`
+    (nullable), `ingestion_status`, `ingestion_error`,
+    `last_ingested_at`, `screening_score`, `is_screened_in`,
+    `screened_at`.
+  - `GET /universe/{symbol}` — single constituent detail; `404` if the
+    symbol isn't tracked under the given index.
+
 ---
 
 ## 17. Production Readiness (v1.2 / release `v1.0.0-alpha`, v1.3 AI
-Investment Planner) and Version 1.4+ Status
+Investment Planner, v1.4 Market Universe) and Version 1.5+ Status
 
 **Version 1.1 (MVP Frontend), Version 1.2 (Live Production
-Verification), and Version 1.3 (AI Investment Planner — the user's own
+Verification), Version 1.3 (AI Investment Planner — the user's own
 request labeled this "Version 1.1", a distinct product-facing label; see
-the top-of-document note) are all complete** — see §11's entries for
-full delivered scope. **No Version 1.4 specification has been given by
-the user as of this document's last update.** Do not infer one and do
-not start implementing anything under a "v1.4" label without first
-getting an explicit, detailed spec, the same rhythm every version
-through v1.3 followed (§15 point 3).
+the top-of-document note), and Version 1.4 (Market Universe) are all
+complete** — see §11's entries for full delivered scope. **No Version
+1.5 specification has been given by the user as of this document's last
+update.** Do not infer one and do not start implementing anything under
+a "v1.5" label without first getting an explicit, detailed spec, the
+same rhythm every version through v1.4 followed (§15 point 3).
 
-**v1.3 production-readiness summary** (design-first, then implemented
-exactly as designed per explicit user instruction; full detail in the
-v1.3 production review delivered to the user): reused
-`InvestmentCommitteeOrchestrator` and the retrieval engine unchanged,
-made zero new LLM calls of its own (§13 point 1f), added two new tables
-and one new backend module plus two new frontend pages, and was
-live-verified end-to-end against the real pipeline (real allocation
-generated and rendered correctly across all three risk profiles against
-this sandbox's single real candidate, the empty-universe failure path
-live-exercised, 28 new backend tests + 6 new Playwright specs passing,
-zero regressions across the 588 pre-existing backend tests or the 9
-pre-existing e2e specs). Two real bugs were found via live browser
-verification (not by any automated test) and fixed: a native HTML5
-`min` attribute silently blocking the planner form's custom client-side
-validation, and a React Rules-of-Hooks violation (variable-length
-`useAsync` deps array) in `RebalanceSection` that also caused an
-unconditional eager network call. No Critical or High issues were found
-open at review time. The honest, disclosed scope limits are §14's new
-v1.3 items: rebalancing is a placeholder only, ranking weights/caps are
-untuned defaults, and live verification only ever exercised a
-single-candidate universe (this sandbox's seed data supports exactly
-one real candidate, TCS) — genuine multi-candidate ranking and
-sector-cap redistribution remain unit-tested-only, not live-verified.
+**v1.4 production-readiness summary** (full detail in the v1.4
+production review delivered to the user): reused six existing domain
+services and `InvestmentCommitteeOrchestrator` unchanged, made zero new
+LLM calls of its own (§13 point 1g), added one new table and one new
+backend module, and was live-verified end-to-end against the real
+pipeline: 9 real Nifty 50 companies ingested, deterministically
+screened (correctly excluding the 6 without usable financials — a real
+yfinance data gap, §14 — not an artifact of the screening logic),
+real Investment Committee reports generated, and a real 3-holding
+multi-company portfolio generated and rendered correctly, including the
+first live exercise of same-sector cap redistribution across multiple
+real candidates (§14). Two real bugs were found via this version's own
+live verification (not by any automated test) and fixed **before**
+either could repeat at scale: `ingest_constituent`'s six steps
+originally aborted as one all-or-nothing unit, so one flaky upstream
+step (the yfinance gap) was silently zeroing out five unrelated,
+independently-fetchable data types; and `screen` had no financials gate
+at all, so a company `portfolio_planner` could never actually select
+was screened in on other evidence alone and consumed a real,
+unrecoverable Investment Committee run. Zero frontend code was written
+(the existing `/planner` UI is entirely data-driven) and zero
+regressions were found in any pre-existing single-company page. No
+Critical or High issues were found open at review time. The honest,
+disclosed scope limits are §14's new v1.4 items: the Nifty 50 seed list
+is a static snapshot, not live-synced from an index-membership
+provider; several real large-cap NSE tickers have no yfinance quarterly
+financials coverage today, capping how much of the seeded universe is
+actually planner-eligible; `market_universe`'s own screening weights
+are untuned defaults; and ranking/allocation across candidates in
+*different* sectors remains unit-tested only, since this sandbox's real
+committee-eligible companies are all Technology.
 
 **Production-readiness classification (v1.2's own live-verification
 pass, full detail delivered to the user as a production review; summary
@@ -2264,14 +2441,17 @@ cross-check for every specialist, findings caching, concurrent specialist
 execution, widening Compliance's deterministic filter, closing the CI
 Postgres-service gap, structurally hardening the `metric`/summary-
 consistency mitigations (§14) rather than relying on prompt wording
-alone — plus, new from v1.3: a real rebalancing engine, empirical
-tuning of the planner's ranking weights/caps, and universe-selection
-result caching. These are **candidates the user has not yet chosen
-from or approved**, not a queued backlog. When a new conversation picks
-this up, the first step is asking the user which of these (or something
-else entirely) Version 1.4 should be.
+alone, a real rebalancing engine, empirical tuning of the planner's
+ranking weights/caps, universe-selection result caching — plus, new
+from v1.4: multi-index support, live index-membership sync, fixing (or
+permanently documenting) the real yfinance quarterly-financials gap,
+and empirical tuning of `market_universe`'s own screening weights.
+These are **candidates the user has not yet chosen from or approved**,
+not a queued backlog. When a new conversation picks this up, the first
+step is asking the user which of these (or something else entirely)
+Version 1.5 should be.
 
-If Version 1.4 turns out to be Macro Economy or Portfolio Analyst: both
+If Version 1.5 turns out to be Macro Economy or Portfolio Analyst: both
 were explicitly scoped *out* of v1.0 for real, substantive reasons (no
 macro data source exists anywhere in this codebase; Portfolio needs a
 fundamentally different, portfolio/user-level `AgentContext` shape and
@@ -2279,7 +2459,7 @@ is blocked on real auth) — see §12 item 1 and
 `INVESTMENT_COMMITTEE_DESIGN.md` §1. Neither is a simple "copy the
 Technical Analyst template" exercise; each needs its own real spec.
 
-If Version 1.4 touches the Investment Committee itself (Compliance
+If Version 1.5 touches the Investment Committee itself (Compliance
 widening, concurrency, evidence-query tuning, confidence weighting, the
 `metric`/summary structural hardening above): read
 `INVESTMENT_COMMITTEE_DESIGN.md` in full first, then §13 points 1d and 1e
@@ -2289,7 +2469,7 @@ Compliance, Fundamental-must-succeed quorum, no P/B, the specific
 defaults to casually revisit without the same explicit conversation that
 set them.
 
-If Version 1.4 touches the AI Investment Planner itself (a real
+If Version 1.5 touches the AI Investment Planner itself (a real
 rebalancing engine, ranking/allocation tuning, universe-selection
 caching): read `INVESTMENT_PLANNER_DESIGN.md` in full first, then §13
 point 1f carefully — the "zero new LLM calls" principle and the
@@ -2297,7 +2477,15 @@ deliberate non-reuse of `portfolios`/`holdings` are frozen, not defaults
 to casually revisit without the same explicit conversation that set
 them.
 
-If Version 1.4 is another new specialist agent style module elsewhere in
+If Version 1.5 touches Market Universe itself (a real yfinance-gap
+fallback, multi-index support, live index-membership sync, screening
+weight tuning): read this document's §11 v1.4 entry and §13 point 1g
+carefully — the "no LLM calls, financials existence is a hard
+screening gate, per-step ingestion resilience" decisions are frozen,
+not defaults to casually revisit without the same explicit conversation
+that set them.
+
+If Version 1.5 is another new specialist agent style module elsewhere in
 this codebase: `ai_agents/agents/technical/` (or any of the other four)
 is now as valid a template to copy as `fundamental/` was — read whichever
 is closest in evidence shape to the new domain, and read §13 points 1,

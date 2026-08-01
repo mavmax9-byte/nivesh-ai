@@ -47,6 +47,7 @@ from nivesh.ai_agents.repository import AgentFindingRepository
 from nivesh.companies.models import Company
 from nivesh.companies.repository import CompanyRepository
 from nivesh.financials.repository import FinancialStatementRepository
+from nivesh.market_universe.repository import UniverseConstituentRepository
 from nivesh.portfolio_planner.models import PlannedPortfolio
 from nivesh.portfolio_planner.repository import PlannedPortfolioRepository
 
@@ -91,6 +92,7 @@ class PortfolioPlannerService:
         finding_repository: AgentFindingRepository,
         portfolio_repository: PlannedPortfolioRepository,
         orchestrator: InvestmentCommitteeOrchestrator,
+        universe_repository: UniverseConstituentRepository | None = None,
     ) -> None:
         self._session = session
         self._companies = company_repository
@@ -98,6 +100,12 @@ class PortfolioPlannerService:
         self._findings = finding_repository
         self._portfolios = portfolio_repository
         self._orchestrator = orchestrator
+        # Optional (v1.4, PROJECT_CONTEXT.md §13 point 1g): when given,
+        # Tier 2's shortlist prefers market_universe's deterministically
+        # screened-in candidates over the plain alphabetical fallback --
+        # see _select_universe. Defaults to None so any existing caller
+        # (and every pre-v1.4 test) keeps the exact v1.3 behavior.
+        self._universe = universe_repository
 
     async def generate(self, portfolio_id: uuid.UUID) -> None:
         portfolio = await self._portfolios.get_by_id(portfolio_id)
@@ -226,15 +234,26 @@ class PortfolioPlannerService:
         sector-permitted, has at least one financial statement (mirrors
         Fundamental Analyst's own quorum requirement, so candidates
         destined to fail quorum are never even attempted). Tier 2 (free):
-        cap the shortlist size before any expensive Tier 3 generation.
-        Must behave correctly for an arbitrarily small candidate pool --
-        this sandbox's own real data is exactly that case."""
+        cap the shortlist size before any expensive Tier 3 generation --
+        when a `market_universe` (v1.4) screening score exists for a
+        candidate, it ranks ahead of unscored candidates (deterministic
+        evidence-completeness ranking, see market_universe/service.py),
+        so the strongest, already-ingested-and-screened companies are the
+        ones this cap actually keeps; symbol order is the tie-break, and
+        the sole fallback when no `universe_repository` was given at all
+        (unchanged v1.3 behavior). Must behave correctly for an
+        arbitrarily small candidate pool -- this sandbox's own real data
+        is exactly that case."""
         companies = await self._companies.list(limit=UNIVERSE_TIER1_LIMIT)
         exclusions = {s.strip().lower() for s in sector_exclusions}
         tier1 = [c for c in companies if (c.sector or "").strip().lower() not in exclusions]
 
         survivors = [c for c in tier1 if await self._statements.exists_for_company(c.id)]
-        survivors.sort(key=lambda c: c.symbol)
+
+        scores: dict[uuid.UUID, float] = {}
+        if self._universe is not None and survivors:
+            scores = await self._universe.get_screening_scores([c.id for c in survivors])
+        survivors.sort(key=lambda c: (-scores.get(c.id, -1.0), c.symbol))
         return survivors[:UNIVERSE_TIER2_CAP]
 
     async def _score_one(self, company: Company, risk_profile: str) -> ScoredCandidate | None:

@@ -276,6 +276,73 @@ class TestEnsureFreshReport:
         assert result is None
 
 
+class TestSelectUniverse:
+    @pytest.mark.asyncio
+    async def test_falls_back_to_alphabetical_when_no_universe_repository_given(self):
+        company_repository = AsyncMock()
+        company_repository.list.return_value = [_company("ZETA"), _company("ALPHA")]
+        statement_repository = AsyncMock()
+        statement_repository.exists_for_company.return_value = True
+
+        service = _make_service(
+            company_repository=company_repository, statement_repository=statement_repository
+        )
+        assert service._universe is None
+
+        result = await service._select_universe([])
+
+        assert [c.symbol for c in result] == ["ALPHA", "ZETA"]
+
+    @pytest.mark.asyncio
+    async def test_prefers_higher_screening_score_over_alphabetical_order(self):
+        """v1.4: market_universe's screening score, when available, ranks
+        a candidate ahead of plain alphabetical order -- ZETA has a lower
+        symbol but the stronger (higher) screening score, so it should be
+        selected first."""
+        zeta = _company("ZETA")
+        alpha = _company("ALPHA")
+        company_repository = AsyncMock()
+        company_repository.list.return_value = [zeta, alpha]
+        statement_repository = AsyncMock()
+        statement_repository.exists_for_company.return_value = True
+        universe_repository = AsyncMock()
+        universe_repository.get_screening_scores.return_value = {
+            zeta.id: 0.9,
+            alpha.id: 0.2,
+        }
+
+        service = _make_service(
+            company_repository=company_repository,
+            statement_repository=statement_repository,
+            universe_repository=universe_repository,
+        )
+
+        result = await service._select_universe([])
+
+        assert [c.symbol for c in result] == ["ZETA", "ALPHA"]
+
+    @pytest.mark.asyncio
+    async def test_unscored_candidates_sort_after_scored_ones(self):
+        scored = _company("ZETA")
+        unscored = _company("ALPHA")
+        company_repository = AsyncMock()
+        company_repository.list.return_value = [unscored, scored]
+        statement_repository = AsyncMock()
+        statement_repository.exists_for_company.return_value = True
+        universe_repository = AsyncMock()
+        universe_repository.get_screening_scores.return_value = {scored.id: 0.5}
+
+        service = _make_service(
+            company_repository=company_repository,
+            statement_repository=statement_repository,
+            universe_repository=universe_repository,
+        )
+
+        result = await service._select_universe([])
+
+        assert [c.symbol for c in result] == ["ZETA", "ALPHA"]
+
+
 class TestGenerateEndToEnd:
     @pytest.mark.asyncio
     async def test_empty_universe_marks_portfolio_failed(self):
