@@ -12,7 +12,7 @@ land together.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +44,14 @@ class KnowledgeEmbeddingRepository:
     async def list_by_company(
         self, company_id: uuid.UUID, limit: int = 50, offset: int = 0
     ) -> list[KnowledgeEmbedding]:
+        """Caution for callers reusing one session across a `bulk_upsert`
+        and a `list_by_company` of the same rows: `bulk_upsert` writes via
+        a raw Core statement, which the ORM identity map never observes --
+        a row already cached from an earlier read in this session will
+        come back stale here after a later `bulk_upsert`, unless the
+        session expires it first. No current caller does this (see
+        `ai_agents/repository.py`'s `get_latest` for the fuller version of
+        this note, found the same way during v1.2 live verification)."""
         result = await self._session.execute(
             select(KnowledgeEmbedding)
             .where(KnowledgeEmbedding.company_id == company_id)
@@ -86,6 +94,10 @@ class KnowledgeEmbeddingRepository:
                 "embedding": statement.excluded.embedding,
                 "embedding_model": statement.excluded.embedding_model,
                 "embedding_dimensions": statement.excluded.embedding_dimensions,
+                # ORM `onupdate=func.now()` never fires for this Core-level upsert --
+                # must be set explicitly or a re-run leaves `updated_at` stale
+                # (same bug, same fix, as ai_agents/repository.py -- see its comment).
+                "updated_at": func.now(),
             },
         )
         await self._session.execute(statement)

@@ -5,7 +5,7 @@ conversation (or a new human engineer) should be able to read this file and
 continue development with zero loss of context. Written as an onboarding
 document for a Senior Staff Engineer joining the project.
 
-Last updated: after v1.0 (Investment Committee).
+Last updated: after v1.2 (Live Production Verification), released as `v1.0.0-alpha`.
 
 ---
 
@@ -156,12 +156,76 @@ nivesh-ai/
 │   │   └── ingestion/tasks.py   # every Celery task, one shared file
 │   └── tests/                   # mirrors src/ 1:1 by domain, plus conftest.py
 │
-└── frontend/src/                # Next.js App Router, TypeScript, Tailwind
-    ├── app/                     # page.tsx (dashboard placeholder), portfolio/, stocks/, watchlist/
-    ├── components/layout/       # Navbar, Sidebar
-    ├── components/ui/           # shadcn-style button, card
-    └── lib/                     # api-client.ts (thin fetch wrapper), env.ts, utils.ts
+└── frontend/src/                # Next.js 15 App Router, React 19, TypeScript, Tailwind --
+                                  # real MVP as of v1.1 (§11), not a placeholder
+    ├── app/                     # page.tsx (landing), companies/, companies/[symbol]/{,report,
+                                  # specialists,specialists/[agent],evidence}, portfolio/,
+                                  # watchlist/ (still placeholders -- no backend endpoint yet)
+    ├── components/layout/       # Navbar, Sidebar, MobileNav, PageHeader
+    ├── components/committee/    # StanceBadge, EvidenceSufficiencyBadge, ConfidenceMeter,
+                                  # CitationRefs, ComplianceBadge, FindingRow, DisagreementCard,
+                                  # SpecialistStatusRow, SpecialistSummaryCard
+    ├── components/companies/    # CompanyCard, CompanyProfileCard, CompanySubNav, CompanyTeaser
+    ├── components/ui/           # shadcn-style primitives: button, card, badge, progress,
+                                  # skeleton, spinner, input, alert, tabs, empty-state, error-state
+    ├── hooks/                   # useAsync (loading/error/notFound/refetch), usePolling
+                                  # (interval + stopWhen + elapsedMs)
+    └── lib/api/                 # types.ts (TS mirror of every backend Pydantic schema used),
+                                  # companies.ts, research.ts, reports.ts -- typed fetch wrappers
+                                  # over api-client.ts's ApiError-throwing base client
 ```
+
+**v1.1 (MVP Frontend) replaced this entire tree** (§11's v1.1 entry) -- every
+page fetches real data client-side, zero mock data anywhere. Key,
+non-obvious conventions worth knowing before touching this code:
+
+- **Client-side-only data fetching, no SSR data fetching anywhere** -- a
+  deliberate v1.1 choice (`useAsync`/`usePolling` over a library like
+  react-query, to keep the dependency footprint minimal). Don't add
+  server-side data fetching to a page without discussing it first.
+- **Pydantic `Decimal` fields serialize as JSON strings, not numbers** (a
+  real bug found and fixed during v1.1: `latest_price` rendered as
+  `"₹2398.0000"` before the TS type was corrected to `string | null` and
+  `CompanyProfileCard.tsx`'s `formatPrice` was fixed to `Number()`-parse
+  before formatting). Any new numeric field pulled from a `Decimal` backend
+  column needs the same treatment -- assume string, not number, until
+  proven otherwise.
+- **"404 as null, not error" polling pattern**: `pollSpecialistFinding`/
+  `pollCommitteeReport`/`pollResearchDossier`/`pollCommitteeProgress`
+  (`lib/api/reports.ts`) catch a 404 `ApiError` and return `null` instead
+  of throwing, since "not generated yet" is an expected, common state for
+  this platform, not a failure. `pollCommitteeProgress` composites all 5
+  specialist `GET`s + the committee `GET` in one `Promise.all` tick, so the
+  company hub's progress checklist is always genuinely data-backed --
+  never a fake timer-based progress bar.
+- **No task-status endpoint exists on the backend** (§16 has no such
+  route), so the frontend cannot distinguish "still generating" from "the
+  Celery task actually failed" -- a genuinely failed generation (e.g.
+  quorum not met) leaves the progress screen polling with no explicit
+  failure signal. This is a known, accepted gap inherited from the
+  backend's own architecture, not a frontend bug -- see §14.
+- **Citation deep-linking is global-citations-only.** Report and specialist
+  pages render `[n]` citation chips; only the Chair's own global citations
+  (which have a dedicated Evidence & Citations page, `#citation-<n>`
+  anchors) are links. A specialist's own local citations render as
+  informational, non-linked chips, since there is no separate per-specialist
+  evidence page.
+- **`playwright.config.ts` runs serially (`fullyParallel: false`,
+  `workers: 1`), on purpose** -- Next.js dev-mode compiles each route on
+  first request, and concurrent first-hits across many routes under the
+  default parallel config made cold-compile latency indistinguishable from
+  a real test failure. This is dev-mode-only latency, not a real timing
+  bug; don't "fix" it by adding waits to the tests themselves.
+- **`next.config.ts`'s `output: "standalone"` is scoped to the production
+  build phase only** (`PHASE_PRODUCTION_BUILD`, via Next's function-config
+  form), added after a real incident where running `next build`/`next
+  start` locally corrupted the `next dev` cache badly enough to break the
+  compiled CSS bundle (unstyled pages, `React Client Manifest` errors). See
+  README's "Frontend development workflow" section for the recovery step
+  (`npm run clean`) if this happens again. `outputFileTracingRoot` is also
+  pinned there to silence Next's dual-lockfile warning -- the root
+  `package-lock.json` (Playwright's e2e deps) and `frontend/package-lock.json`
+  (the Next app's own deps) are both intentional, not a cleanup target.
 
 Every domain module that ingests external data (`market_data`, `financials`,
 `corporate_filings`, `document_intelligence`, `news_intelligence`,
@@ -1085,7 +1149,7 @@ pass, not during design or code review — see §5/§14.
 
 ---
 
-## 11. Completed Versions (v0.1 – v1.0)
+## 11. Completed Versions (v0.1 – v1.2)
 
 | Version | Delivered | Key modules/tables |
 |---|---|---|
@@ -1105,9 +1169,13 @@ pass, not during design or code review — see §5/§14.
 
 | **v1.0 — Investment Committee** | The first multi-agent orchestration system in this codebase, and the version that finally fills in `InvestmentCommitteeOrchestrator` (previously always `501`), per `INVESTMENT_COMMITTEE_DESIGN.md` — a full technical design document reviewed and confirmed with the user (four architecture forks settled via `AskUserQuestion`) before any code was written, the same rhythm v0.9 followed. Four new specialist agents join the already-shipped Fundamental Analyst: **Technical** (`technical_indicator` evidence only — almost always exactly one citable item, by design, since `retrieval_engine` bundles every indicator into one snapshot row), **Valuation** (computes a real **P/E ratio** deterministically from the company's latest EPS and Research Dossier price snapshot, presented to the LLM as a synthetic `computed_ratio` evidence item with its own citation — **P/B is never computed**: this platform ingests no shares-outstanding figure anywhere in its schema, a gap surfaced and confirmed via `AskUserQuestion` during implementation, not assumed; every Valuation finding carries a disclosed caveat about it instead of a misleading proxy), **News & Sentiment** (`news_article`/`research_summary`), and **Risk** (`financial_statement`/`document_section`/`corporate_filing`, weighted toward `document_section` since explicit "Risk Factors" filing sections are the most direct risk evidence this codebase has). **Confirmed decisions this version, each an explicit `AskUserQuestion`**: (1) **one shared `RetrievalEngineService.build_context_package` call per committee run**, not one per specialist — distributed via a new, additive `shared_evidence` constructor parameter every concrete agent gained (including retroactively, `FundamentalAnalystAgent` — the one real modification to already-shipped v0.9 code this version made, flagged explicitly, not buried in the diff; `shared_evidence=None` preserves v0.9's exact standalone behavior); (2) **Compliance is deterministic-only** — re-runs the promoted `check_no_investment_advice` filter against the Committee Chair's synthesized text specifically (the one piece of new LLM-generated text nothing has checked yet), no second LLM review pass; (3) **quorum requires Fundamental Analyst specifically** to succeed, not just any non-zero count — the other four are optional enrichment, and any subset of them may fail without failing the committee run (a specialist's own *successful* "insufficient evidence" result still satisfies quorum, since it's a success, not a failure). The generic citation-range/advice-language/confidence-blend guardrails v0.9 built specifically inside `agents/fundamental/validation.py` were promoted to a new shared `ai_agents/guardrails.py` (§3) — real code motion, zero behavior change, since none of them were ever Fundamental-specific. The Committee Chair (`ai_agents/committee/chair.py`, not a `BaseAgent`) never calls `retrieval_engine` itself — its only inputs are specialists' own already-validated, already-persisted findings — builds a **globally deduplicated citation list** across specialists (identity-based `(source_type, source_id)` dedup, the same idiom `retrieval_engine.normalization.deduplicate_and_rank` uses one layer down), normalizes Fundamental's `strengths`/`concerns` and every new specialist's `findings`/`stance` onto one common shape, and surfaces cross-specialist **disagreements** explicitly rather than resolving them into a false consensus or any kind of verdict/score (never built: a resolved recommendation of any kind, consistent with §1's "research only, never trades" identity). Confidence aggregates as `min(mean(succeeded specialists' own confidence_score), bounded(chair.llm_confidence))` — the Chair's self-report can only lower it, never raise it, the identical single-agent rule extended one layer up. Persistence needed **zero new tables** (`agent_findings`'s generic `result_json` shape, built in v0.9 specifically anticipating this, held exactly as promised) — two new `agent_code` values (`investment_committee`, `compliance_review`), the Chair's own row carrying a `source_findings` manifest for traceability against the upsert-only table's overwrite semantics. `POST /reports` is real for the first time (was always `501`); `GET /reports/{symbol}` (new) returns the Chair's decision + Compliance verdict together, treating a Compliance-rejected run as `404`, same as never having run — the rejection itself is still durably persisted as an auditable `compliance_review` row, never silently discarded. Five sequential LLM calls per full committee run (5 specialists + Chair) is an accepted, explicitly-documented latency/cost tradeoff, not an oversight — every specialist's `AIAgentsService` shares the orchestrator's one `AsyncSession`, which is not safe for concurrent coroutine use, so `asyncio.gather` was deliberately not used (see `orchestrator.py`'s own module docstring). One real bug caught by the live E2E pass, not by design or code review: Compliance's verdict was initially being linked into the Research Dossier as its own evidence row in addition to the Chair's, contradicting the design's "exactly one more row" — fixed via a new `link_to_dossier` parameter on `AIAgentsService.persist_finding` (§7/§10). **Not live-verified against the real OpenAI API** — the same carried-forward gap from v0.7 onward, compensated the same way v0.9 was: the real orchestrator, real retrieval, and real Postgres data for TCS were run end-to-end with every LLM call stubbed (see §5/§14). | *(none — zero new tables, reuses `agent_findings`)* |
 
-**Test count as of v1.0: 585 passing** (`pytest`, real Postgres with the
+| **v1.1 — MVP Frontend** | The first real frontend -- replaces every placeholder page (`page.tsx` dashboard stub, empty `portfolio/`/`stocks/`/`watchlist/`) with a working Next.js 15 App Router UI consuming the real backend, zero mock data anywhere, per an explicit user spec ("no new backend capabilities... make Nivesh AI demo-ready"). Eight screens: landing, company search, company hub (unifies generate/in-progress/ready states off one `usePolling(pollCommitteeProgress)` call), Final Research Report, Specialist Findings (grid + detail), Evidence & Citations, plus the pre-existing placeholder Portfolio/Watchlist pages left as-is (explicitly out of scope -- blocked on real auth, §12 item 6). New API layer (`lib/api/`) TS-mirrors every backend Pydantic schema this UI touches (`types.ts`) -- a deliberate "compile error over silent mismatch" choice -- plus two purpose-built hooks (`useAsync`, `usePolling`) chosen over adding a data-fetching library. New design-system layer: full light/dark HSL token set in `globals.css` (`--success`/`--warning`/`--destructive` + `-bg` variants), `tailwind.config.ts` extended to match, `cva`-based `Badge`/`Button`/`Alert` variants. One real bug found during the mandated live-backend verification pass (not by design review): Pydantic serializes `Decimal` fields as JSON **strings**, not numbers -- `latest_price` was rendering as `"₹2398.0000"` (no grouping) because the TS type said `number \| null`; fixed by correcting the type to `string \| null` and having `CompanyProfileCard.tsx`'s `formatPrice` `Number()`-parse before formatting. A self-driven "senior product designer" review pass followed implementation (per the spec's own instruction) and caught two real UX misses before shipping: a duplicate page-title hierarchy (fixed by keeping one real `<h2>` per section instead of removing it entirely -- an over-correction the Playwright suite itself caught and forced a second, better fix) and a missing mobile nav (added `MobileNav.tsx`). 9 new/updated Playwright e2e specs, tuned to run serially (`fullyParallel: false`) after concurrent first-hits against Next's dev-mode cold-compile produced false timeouts under the default parallel config -- a test-infra tuning fix, not an app bug. **Not live-verified against the real OpenAI API** -- the same carried-forward gap since v0.7, resolved for real in v1.2 below. | *(none -- pure frontend, zero backend/schema changes)* |
+| **v1.2 — Live Production Verification** | The first version run end-to-end against the **real** OpenAI API (a real `OPENAI_API_KEY` was finally supplied) -- closes the "not live-verified against the real API" gap every version since v0.7 had carried forward and explicitly flagged as its most significant unverified surface. Real embeddings (`text-embedding-3-small`, 37 embeddings across 4 source types for TCS), real semantic retrieval (confirmed live: genuine cosine-similarity hits, correct cross-leg dedup merging `["semantic","structured"]`), and a real, fully-populated five-specialist Investment Committee run were generated and every output manually inspected end-to-end, cross-checked line-by-line against the real Postgres data behind it (financial statements, technical indicators, news articles) -- not just schema-validated. **Real, user-facing bugs found and fixed, all confirmed via live re-generation after each fix** (see §13 point 1e and §14 for the full list, and ai_agents/repository.py's/each prompts.py's own inline comments for the fix itself): (1) `updated_at` silently frozen on every re-run across three upsert repositories (`ai_agents`, `knowledge_layer`, `technical_intelligence`) -- a raw Core `on_conflict_do_update` statement never triggers the ORM's `onupdate=func.now()` hook, so it must be set explicitly in the `SET` clause; (2) the Technical Analyst hallucinated a price-vs-indicator relationship ("price is above the 20-day EMA") despite never being given a price figure -- its evidence is indicator-values-only, and nothing in its prompt said so; (3) News & Sentiment (and, once triggered, Valuation too) crashed outright when the LLM omitted the shared `SpecialistAssessment.metric` field, since nothing in either prompt explained what "metric" should contain for a news item or a valuation line; (4) findings could cite only one of several evidence items they actually drew from (caught live: a real finding blended two separate ABB news articles, citing only one) -- the citation rule across all five specialist prompts now requires citing every index a claim draws from, not just one; (5) the Committee Chair's synthesis truncated mid-response into unparseable JSON once a real five-specialist run gave it enough material to synthesize -- `LLM_MAX_OUTPUT_TOKENS` raised 2000 → 4000; (6) a specialist's own `summary`/domain-narrative field (`technical_read`, `valuation_assessment`, etc.) could flatly contradict its own `findings` array on a mixed-stance result (observed live: Technical's `summary` claimed "bullish trend" while its own findings correctly showed a bearish EMA crossover) -- every specialist prompt (plus the Chair's, since it receives each specialist's raw `summary` as input) now explicitly requires the narrative fields to reflect every finding, including conflicting ones, rather than flattening to one direction. All six fixes were prompt-level or a single shared config constant, not a schema/architecture change, and all were re-verified with a fresh live run after fixing (the final clean run: 5/5 specialists succeeded, a genuine cross-specialist disagreement correctly surfaced -- Technical's bearish crossover vs. News Sentiment's positive revenue-beat reaction -- Compliance approved, zero further errors). Regression tests added for the `updated_at` fix (one per affected repository, asserting a second upsert actually advances the timestamp) surfaced a second, adjacent bug in the tests themselves: `upsert`'s raw Core write is invisible to the ORM's identity map, so a same-session read-after-a-second-write returned a stale cached object -- fixed in the tests via a targeted `session.expire(obj)`, and flagged as a caution comment on each affected repository method for any future caller that might hit the same trap. All 588 backend tests (585 + 3 new) pass against real Postgres+pgvector; Ruff/mypy clean; all 9 Playwright e2e specs pass against the live stack with real (non-stubbed) committee output. See §17 for the full production-readiness classification. | *(none -- prompt/config fixes only, zero schema changes)* |
+
+**Test count as of v1.2: 588 passing** (`pytest`, real Postgres with the
 `vector` extension installed). Ruff and mypy both clean across the whole
-`src/` tree.
+`src/` tree (193 source files). All 9 Playwright e2e specs pass against a
+live backend with real (non-stubbed) LLM-generated content.
 
 Commits (chronological, all on `main`):
 `6d5e038` init → `9c8ff36` gitignore → `f616f25` Sprint 4 → `fe5a0e4` ruff
@@ -1115,26 +1183,29 @@ fixes → `d308b17` mypy fixes → `53b1e66` feat(v0.3) corporate filings →
 `d3f691c` feat(v0.4) document intelligence → `ae47f82` feat(v0.5) news
 intelligence → `084870c` feat(v0.6) technical intelligence → `9b0b621`
 feat(v0.7) knowledge layer → `1f8f4ac` feat(v0.8) retrieval engine →
-`989dd64` feat(v0.9) fundamental analyst →
-(v1.0 investment committee, see git log for the current hash).
+`989dd64` feat(v0.9) fundamental analyst → `9d906c1` feat(v1.0) investment
+committee → `d569d8b` feat(v1.1) MVP frontend →
+(v1.2 live production verification, see git log for the current hash).
 
 ---
 
-## 12. Current Roadmap (v1.1 onwards)
+## 12. Current Roadmap (v1.3 onwards)
 
-Nothing beyond v1.0 has been scoped or approved yet. Do not start
-implementing v1.1 without an explicit spec from the user — this project's
+Nothing beyond v1.2 has been scoped or approved yet. Do not start
+implementing v1.3 without an explicit spec from the user — this project's
 working pattern has consistently been: architecture review first (no code)
 → user confirms scope → implement → self-review → verify → commit/push.
-See §17 for the current v1.1 spec status.
+See §17 for the current production-readiness state and v1.3 spec status.
 
-**What v0.4 through v1.0 were explicitly building toward**: document
+**What v0.4 through v1.2 were explicitly building toward**: document
 extractions, news articles, technical indicators, a semantic retrieval
 index, a hybrid ranked-evidence retrieval surface over all of it, one
-working specialist agent consuming that surface to actually reason, and
-now a real multi-agent committee synthesizing five specialists into one
-cited, cross-checked view — exist so a *future* version can build on
-them. Natural, foreshadowed next steps, roughly in dependency order:
+working specialist agent consuming that surface to actually reason, a
+real multi-agent committee synthesizing five specialists into one cited,
+cross-checked view, a real frontend consuming all of it, and finally a
+real, live-verified pass against the actual OpenAI API — exist so a
+*future* version can build on them. Natural, foreshadowed next steps,
+roughly in dependency order:
 
 1. **Macro Economy and Portfolio Analyst agents** — the two specialist
    agents named in `agents/base.py`'s original docstring that v1.0
@@ -1178,9 +1249,10 @@ them. Natural, foreshadowed next steps, roughly in dependency order:
 7. **Portfolio analytics** (`portfolios/service.py`'s docstring: "Portfolio
    analytics... are produced by the Portfolio Analysis Agent, not this
    service" — i.e. this is blocked on item 1).
-8. **Frontend wiring** — the Next.js app currently has placeholder pages
-   with "No data yet" copy; `lib/api-client.ts` exists but nothing calls
-   the real backend endpoints yet.
+8. ~~**Frontend wiring**~~ -- **done as of v1.1** (§11's v1.1 entry). The
+   remaining frontend gap is narrower: `portfolio/`/`watchlist/` are still
+   placeholder pages, blocked on real auth (item 6 below), same as their
+   backend counterparts.
 9. **Raw document storage** — explicitly postponed in v0.4 (see §13). If
    ever revisited, requires a real infrastructure decision (S3/MinIO) that
    doesn't exist in this stack today.
@@ -1255,6 +1327,24 @@ them. Natural, foreshadowed next steps, roughly in dependency order:
     v1.0 equal-weight default (`committee/confidence.py`) — both
     documented starting guesses, not empirically validated, the same
     "revisit once real usage exists" caveat as `RECENCY_HALF_LIFE_DAYS`.
+19. **Add Postgres/Redis service containers to `.github/workflows/ci.yml`**
+    — the pre-existing gap §14 documents (CI green doesn't prove
+    Postgres-backed tests ran) matters more now that v1.2 added three
+    Postgres-backed regression tests for the `updated_at` upsert bug.
+    Straightforward (`services: postgres: image: pgvector/pgvector:pg16`
+    + a `TEST_DATABASE_URL` env var pointed at it), not attempted during
+    v1.2 itself since it's CI infrastructure, not the live-verification
+    work that version's spec actually asked for.
+20. **Structurally harden the `metric`-field and summary-consistency
+    fixes from v1.2** (§13 point 1e, §14) beyond prompt wording — e.g.
+    give `SpecialistAssessment.metric` a default value, or catch-and-drop
+    a single malformed finding instead of failing the whole specialist
+    call (the same "drop the claim, not the response" idiom
+    `filter_valid_citation_refs` already uses); and/or a deterministic
+    post-check flagging (not silently correcting) a specialist's
+    `summary` if its stance words contradict its own `findings`. Not
+    built during v1.2 itself without a real recurrence rate past the
+    prompt fix to justify the added complexity.
 
 ---
 
@@ -1358,6 +1448,32 @@ deliberate conversation with the user first)
     (`min(mean(succeeded specialists), bounded(chair.llm_confidence))`).
     Changing any of these needs a fresh explicit conversation with the
     user first, the same as 1a/1b/1c.
+1e. **v1.2's specific live-verification fixes are themselves frozen** --
+    each was found via a real, live OpenAI API run and confirmed fixed by
+    re-running live, not a hypothetical hardening: `LLM_MAX_OUTPUT_TOKENS`
+    is **4000, not 2000** (config.py -- the Chair's synthesis genuinely
+    needs the headroom once all five specialists succeed; lowering this
+    back reintroduces a real, reproduced truncated-JSON failure). Every
+    specialist prompt's citation rule requires citing **every** evidence
+    index a claim draws from, not just one (a real citation-attribution
+    gap was observed live before this). Every specialist's shared
+    `SpecialistAssessment.metric` field has explicit per-domain guidance
+    in its prompt on what to put there (a real, reproducible schema
+    validation crash was observed live without it, for two different
+    specialists). Every specialist's (and the Chair's) narrative fields
+    (`summary` plus its own domain-specific field) must explicitly
+    acknowledge conflicting findings rather than flattening to one
+    direction (a real self-contradictory summary was observed live
+    without this). None of these are speculative robustness -- each
+    fixes a specific, reproduced failure from a real LLM response (see
+    §11's v1.2 entry for the full incident list). Any Core-level
+    `on_conflict_do_update` upsert statement (`ai_agents`/
+    `knowledge_layer`/`technical_intelligence` repositories) **must**
+    include `updated_at` in its `SET` clause explicitly -- the model's
+    `onupdate=func.now()` is an ORM-level hook that silently never fires
+    for a raw Core statement (found live, §14). Changing any of these
+    needs a fresh explicit conversation with the user first, the same as
+    1a/1b/1c/1d.
 2. **One shared `Base`, one Postgres database.** Never introduce a second
    declarative base or a second database/schema without explicit sign-off.
 3. **The provider/factory/DTO abstraction is not optional.** Business
@@ -1399,6 +1515,19 @@ deliberate conversation with the user first)
 
 ## 14. Known Limitations and Future Improvements
 
+**Resolved as of v1.2, superseding every "not live-verified against the
+real OpenAI API" caveat below and throughout §11's v0.7/v0.9/v1.0 entries**
+(kept in place as accurate historical record of what was true at each of
+those versions' own release time, not edited retroactively): a real
+`OPENAI_API_KEY` was finally supplied and every LLM/embedding call site in
+this codebase (embeddings, all five specialists, the Committee Chair) was
+run live end-to-end, with real output manually inspected line-by-line
+against real Postgres data. See §11's v1.2 entry for the six real bugs
+this surfaced and fixed, and §13 point 1e for the resulting frozen
+decisions. What v1.2 did **not** do: exercise a second real company beyond
+TCS, or a sustained/high-volume run -- see the new v1.2-specific items
+appended at the end of this section for what remains genuinely open.
+
 - **`corporate_filings`' dev provider does not produce real document
   links.** `source_url` values are generic exchange investor-relations
   pages, and `checksum` is a metadata fingerprint, not a document hash.
@@ -1432,14 +1561,9 @@ deliberate conversation with the user first)
   (which `docker-compose.yml` already targets) may not hit the same
   issues, but the `engine.dispose()` fix should stay regardless — it is
   correct on any platform, just more silently masked on Linux.
-- **Frontend is not wired to the backend at all.** Every page is a static
-  placeholder. This is a large, mostly-independent stream of future work.
-- **`ai_agents` has zero implementation.** `BaseAgent` defines a contract
-  (`AgentContext`, `AgentFinding`) with no concrete specialist agents, and
-  `InvestmentCommitteeOrchestrator` always raises `NotImplementedYetError`
-  by design (explicitly not stubbed with fake data, per its own
-  docstring, "since fabricated AI output would violate the explainability
-  contract before it even exists").
+- **Frontend `portfolio/`/`watchlist/` remain placeholder pages** (§12 item
+  8) -- blocked on real auth, same as their backend counterparts. Every
+  other page is real and live as of v1.1.
 - **`news_intelligence` deduplicates per-provider only, by explicit
   design.** `NewsArticle.checksum` folds `provider` into the dedup key, so
   two different providers reporting the same real-world story under
@@ -1695,7 +1819,50 @@ deliberate conversation with the user first)
   (`INVESTMENT_COMMITTEE_DESIGN.md` §5). The Chair is simply asked, as
   part of its structured output, to identify points of tension — subject
   to the same "not live-verified" caveat as every other v1.0 LLM call
-  above.
+  above (now resolved, see the note at the top of this section) — the
+  Chair's disagreement detection **was** confirmed live and correct in
+  v1.2: a real run surfaced a genuine, specific tension (Technical's
+  bearish EMA crossover vs. News Sentiment's positive revenue-beat
+  reaction) rather than either a generic difference in domain focus or a
+  false consensus.
+
+- **v1.2's prompt-level fixes are mitigations, not structural
+  guarantees.** The `metric`-field-omission crash and the
+  summary-contradicts-findings inconsistency (§11's v1.2 entry, §13 point
+  1e) were both fixed by adding explicit instructions to the relevant
+  prompts, confirmed working on a live re-run — but LLM output is
+  probabilistic, and a prompt instruction lowers the recurrence rate, it
+  does not make either failure mode structurally impossible the way a
+  schema or guardrail change would. Two real structural options exist for
+  later, deliberately not implemented now: give `SpecialistAssessment
+  .metric` a default value (or catch-and-drop the single bad finding
+  instead of failing the whole specialist call, the same "drop the claim,
+  not the response" philosophy `filter_valid_citation_refs` already uses
+  for citations) instead of a hard-required Pydantic field; and/or a
+  cheap deterministic post-check that flags (not silently fixes) a
+  specialist's `summary` if its stance words contradict its own
+  `findings`' stance values. Neither was built without a real recurrence
+  rate to justify it — the same "don't build ahead of real usage" pattern
+  already applied to `retrieval_engine`'s scoring formula (§12 item 12).
+- **CI has no Postgres/Redis service containers** (`.github/workflows
+  /ci.yml`) — this is the pre-existing gap §14 already documented above
+  (`db_session` skips cleanly, not a failure, without a reachable
+  `TEST_DATABASE_URL`), restated here because v1.2 makes it matter more:
+  every one of this version's regression tests (the three `updated_at`
+  fixes) is a Postgres-backed repository test, so CI passing on a v1.2 PR
+  does not by itself prove these specific new tests ran. They were
+  confirmed passing locally against real Postgres+pgvector during v1.2's
+  own verification (§11), but this gap should be closed (add `services:
+  postgres:` to the workflow) before relying on CI alone for any future
+  change to these three repositories.
+- **v1.2 verified exactly one company (TCS) in exactly one sandbox.**
+  Every fix was confirmed against the same seeded dataset used throughout
+  this project's history. A structurally different company (e.g. one
+  with genuinely rich `document_section` risk-factor text once the NSE-
+  blocking gap is ever resolved, or one with far more news volume) could
+  still surface prompt-adherence failures this pass didn't have the
+  evidence shape to exercise — not a known bug, just an honest bound on
+  what "live-verified" means here.
 
 ---
 
@@ -1903,62 +2070,85 @@ Celery task exists for this module (§9)
 
 ---
 
-## 17. Version 1.1 — Specification Status
+## 17. Production Readiness (v1.2 / release `v1.0.0-alpha`) and Version 1.3+ Status
 
-**No Version 1.1 specification has been given by the user as of this
-document's last update.** Do not infer one and do not start implementing
-anything under a "v1.1" label without first getting an explicit,
-detailed spec from the user, the same way v0.3 through v1.0 each began
-with one (see §15 point 3 for the established rhythm: architecture review
-first, user confirms scope, then implement).
+**Version 1.1 (MVP Frontend) and Version 1.2 (Live Production
+Verification) are both complete** — see §11's entries for full delivered
+scope. **No Version 1.3 specification has been given by the user as of
+this document's last update.** Do not infer one and do not start
+implementing anything under a "v1.3" label without first getting an
+explicit, detailed spec, the same rhythm every version through v1.2
+followed (§15 point 3).
 
-**Version 1.0 (Investment Committee) is complete** — see §11's v1.0 entry
-for the full delivered scope (five specialist agents, the Committee
-Chair, deterministic Compliance, a real `InvestmentCommitteeOrchestrator`,
-zero new tables), §13 point 1d for its frozen decisions, and §14 for its
-known limitations (no P/B, no live OpenAI verification for the five new
-LLM call sites, sequential specialist execution).
+**Production-readiness classification (v1.2's own live-verification
+pass, full detail delivered to the user as a production review; summary
+kept here for a fresh conversation):**
 
-§12 (Current Roadmap) lists the candidate next-step directions already
-identified — Macro Economy and Portfolio Analyst agents (both explicitly
-deferred from v1.0's own scope), a shares-outstanding data source to
+- **Critical/High issues found: six, all fixed and re-verified live**
+  before this document was last updated — see §11's v1.2 entry for the
+  full list (the `updated_at` upsert bug, the Technical Analyst price
+  hallucination, the `metric`-field schema crash, citation
+  under-attribution, the Chair's token-budget truncation, and the
+  summary-vs-findings self-contradiction). Each was reproduced live, root-
+  caused, fixed, and confirmed fixed by a fresh live re-run — not fixed
+  speculatively.
+- **No Critical or High issues remain open.** The version is
+  **declared production-ready as `v1.0.0-alpha`** — "alpha" describing
+  the *scope* (single-tenant dev auth placeholder, no P/B, no result
+  caching, one sandbox company exercised live), not unresolved defects.
+- **Medium issues, deliberately left open, not blockers**: prompt-level
+  fixes for the `metric`-field and summary-consistency bugs are
+  mitigations, not structural guarantees (§14); CI has no Postgres
+  service containers, so CI green alone doesn't prove the new Postgres-
+  backed tests ran (§14, pre-existing gap, not a v1.2 regression); only
+  one company (TCS) has been live-verified (§14).
+- **Low issues**: everything already carried forward from v1.0 and
+  earlier as an explicit, disclosed, accepted limitation — auth
+  placeholder, no P/B, sequential specialist execution, no lock file, no
+  numeric cross-check beyond Valuation's P/E, Windows-sandbox-only
+  process fragility. None are v1.2 regressions; all pre-date it.
+
+§12 (Current Roadmap) lists the candidate next-step directions — Macro
+Economy and Portfolio Analyst agents, a shares-outstanding data source to
 unblock a real P/B ratio, a real filings-discovery provider, a second
-news provider, real authentication, portfolio analytics, frontend
-wiring, raw document storage, a pgvector ANN index, revisiting
-`retrieval_engine`'s scoring formula now that five specialists plus a
-Chair are real consumers, a numeric cross-check for every specialist
-(not just Valuation's partial P/E-based one), findings caching, further
-auto-chaining, concurrent specialist execution, widening Compliance's
-deterministic filter, and tuning the shared-retrieval query/limit and
-confidence-aggregation weighting — roughly in dependency order. These
-are **candidates the user has not yet chosen from or approved**, not a
-queued backlog to work through automatically. When a new conversation
-picks this up, the first step is asking the user which of these (or
-something else entirely) Version 1.1 should be, not assuming §12's
-ordering is a decision.
+news provider, real authentication, portfolio analytics, raw document
+storage, a pgvector ANN index, revisiting `retrieval_engine`'s scoring
+formula now that real committee runs exist to tune against, a numeric
+cross-check for every specialist, findings caching, concurrent specialist
+execution, widening Compliance's deterministic filter — plus, new from
+v1.2: closing the CI Postgres-service gap, and structurally hardening the
+`metric`/summary-consistency mitigations (§14) rather than relying on
+prompt wording alone. These are **candidates the user has not yet chosen
+from or approved**, not a queued backlog. When a new conversation picks
+this up, the first step is asking the user which of these (or something
+else entirely) Version 1.3 should be.
 
-If Version 1.1 turns out to be Macro Economy or Portfolio Analyst: both
+If Version 1.3 turns out to be Macro Economy or Portfolio Analyst: both
 were explicitly scoped *out* of v1.0 for real, substantive reasons (no
 macro data source exists anywhere in this codebase; Portfolio needs a
 fundamentally different, portfolio/user-level `AgentContext` shape and
 is blocked on real auth) — see §12 item 1 and
 `INVESTMENT_COMMITTEE_DESIGN.md` §1. Neither is a simple "copy the
-Technical Analyst template" exercise the way Technical/Valuation/News/
-Risk were for v1.0; each needs its own real spec.
+Technical Analyst template" exercise; each needs its own real spec.
 
-If Version 1.1 touches the Investment Committee itself (Compliance
-widening, concurrency, evidence-query tuning, confidence weighting):
-read `INVESTMENT_COMMITTEE_DESIGN.md` in full first, then §13 point 1d
-carefully — the four confirmed decisions there (shared retrieval,
-deterministic-only Compliance, Fundamental-must-succeed quorum, no P/B)
-are frozen, not defaults to casually revisit without the same explicit
-conversation that set them.
+If Version 1.3 touches the Investment Committee itself (Compliance
+widening, concurrency, evidence-query tuning, confidence weighting, the
+`metric`/summary structural hardening above): read
+`INVESTMENT_COMMITTEE_DESIGN.md` in full first, then §13 points 1d and 1e
+carefully — the decisions there (shared retrieval, deterministic-only
+Compliance, Fundamental-must-succeed quorum, no P/B, the specific
+`LLM_MAX_OUTPUT_TOKENS` value and prompt rules v1.2 added) are frozen, not
+defaults to casually revisit without the same explicit conversation that
+set them.
 
-If Version 1.1 is another new specialist agent style module elsewhere in
+If Version 1.3 is another new specialist agent style module elsewhere in
 this codebase: `ai_agents/agents/technical/` (or any of the other four)
 is now as valid a template to copy as `fundamental/` was — read whichever
 is closest in evidence shape to the new domain, and read §13 points 1,
-1c, and 1d carefully; the *pattern* of deterministic, non-LLM guardrails
-wrapping every LLM call (now living in `ai_agents/guardrails.py`, shared,
-not duplicated) is the house style going forward, not something each new
-agent reinvents from scratch.
+1c, 1d, and 1e carefully; the *pattern* of deterministic, non-LLM
+guardrails wrapping every LLM call (now living in `ai_agents/guardrails.py`,
+shared, not duplicated) is the house style going forward, not something
+each new agent reinvents from scratch — and every specialist prompt now
+needs an explicit "what goes in this field" instruction for every
+schema-required freeform field (§13 point 1e), not just the
+citation/advice-language rules v0.9 originally established.

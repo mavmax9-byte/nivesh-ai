@@ -63,6 +63,33 @@ async def test_bulk_upsert_is_idempotent_on_conflict(db_session):
 
 
 @pytest.mark.asyncio
+async def test_bulk_upsert_advances_updated_at_on_conflict(db_session):
+    """`updated_at` has `onupdate=func.now()` on the model, but that's an
+    ORM-level hook that never fires for this Core-level
+    `on_conflict_do_update` statement -- see repository.py's comment (same
+    bug class found and fixed across ai_agents/knowledge_layer/
+    technical_intelligence during v1.2 live verification)."""
+    company = await _make_company(db_session)
+    repository = TechnicalIndicatorRepository(db_session)
+
+    await repository.bulk_upsert([_row(company.id, date(2026, 1, 1), "sma_20", 100.0)])
+    first = (await repository.get_history_by_indicator(company.id, "sma_20"))[0]
+    first_updated_at, first_created_at = first.updated_at, first.created_at
+
+    await repository.bulk_upsert([_row(company.id, date(2026, 1, 1), "sma_20", 105.5)])
+    # `bulk_upsert` writes via a raw Core statement, which the ORM's identity
+    # map never observes -- without expiring, this second read would
+    # silently return the same stale, already-loaded Python object. Expire
+    # only `first` (not `expire_all`, which would also expire `company` and
+    # trip a MissingGreenlet on the plain `company.id` access below).
+    db_session.expire(first)
+    second = (await repository.get_history_by_indicator(company.id, "sma_20"))[0]
+
+    assert second.updated_at > first_updated_at
+    assert second.created_at == first_created_at
+
+
+@pytest.mark.asyncio
 async def test_get_last_indicator_value_returns_most_recent(db_session):
     company = await _make_company(db_session)
     repository = TechnicalIndicatorRepository(db_session)

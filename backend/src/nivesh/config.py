@@ -60,7 +60,15 @@ class Settings(BaseSettings):
     # not creative writing, and low temperature reduces run-to-run
     # variance (see ai_agents/providers/openai_provider.py).
     LLM_MODEL: str = "gpt-4o-mini"
-    LLM_MAX_OUTPUT_TOKENS: int = 2000
+    # Shared across every LLM call site (5 specialists + the Committee
+    # Chair). 2000 was enough for any single specialist, but the Chair
+    # synthesizes across all of them at once (findings, disagreements,
+    # global citations, caveats) and hit this ceiling mid-response with a
+    # real 5-specialist committee run, producing truncated, unparseable
+    # JSON (`Unterminated string...`) -- found during v1.2 live
+    # verification. Raised for headroom on the Chair's larger output; no
+    # specialist call needs anywhere near this much in practice.
+    LLM_MAX_OUTPUT_TOKENS: int = 4000
     LLM_TEMPERATURE: float = 0.1
 
     @property

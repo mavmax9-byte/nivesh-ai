@@ -31,7 +31,7 @@ def test_system_prompt_forbids_investment_advice_and_requires_citations():
 
 
 def test_prompt_version_is_a_fixed_string():
-    assert PROMPT_VERSION == "valuation-v1"
+    assert PROMPT_VERSION == "valuation-v1.3"
 
 
 def test_build_user_prompt_includes_symbol_and_evidence_citations():

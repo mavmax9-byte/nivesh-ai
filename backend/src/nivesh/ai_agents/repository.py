@@ -14,7 +14,7 @@ session (see `ai_agents/service.py`).
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,17 @@ class AgentFindingRepository:
         self._session = session
 
     async def get_latest(self, company_id: uuid.UUID, agent_code: str) -> AgentFinding | None:
+        """Caution for callers reusing one session across a write and a
+        read of the *same* `(company_id, agent_code)` identity: `upsert`
+        writes via a raw Core statement, which never updates the ORM
+        identity map. A `get_latest` call that already cached this row
+        earlier in the session will keep returning that stale object after
+        a subsequent `upsert`, unless the session expires it first (see
+        `Session.expire_all`/`expire`). No current caller does this -- every
+        production code path reads a given identity at most once per
+        session, always after its one write -- but it's a real trap for the
+        next one that does (found via a test that hit exactly this, during
+        v1.2 live verification)."""
         result = await self._session.execute(
             select(AgentFinding).where(
                 AgentFinding.company_id == company_id,
@@ -63,6 +74,11 @@ class AgentFindingRepository:
                 "model_used": statement.excluded.model_used,
                 "confidence_score": statement.excluded.confidence_score,
                 "evidence_sufficiency": statement.excluded.evidence_sufficiency,
+                # The model's `onupdate=func.now()` is an ORM-level hook and never
+                # fires for this Core-level upsert statement, so it must be set
+                # explicitly here or a re-run silently leaves `updated_at` frozen
+                # at first-ever creation (found during v1.2 live verification).
+                "updated_at": func.now(),
             },
         )
         await self._session.execute(statement)

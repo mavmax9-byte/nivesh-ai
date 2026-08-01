@@ -92,6 +92,52 @@ async def test_upsert_overwrites_existing_finding_for_same_company_and_agent(db_
 
 
 @pytest.mark.asyncio
+async def test_upsert_advances_updated_at_on_a_second_run(db_session):
+    """`updated_at` has `onupdate=func.now()` on the model, but that's an
+    ORM-level hook that never fires for `upsert`'s Core-level
+    `on_conflict_do_update` statement -- `updated_at` must be set explicitly
+    in the `SET` clause, or a re-run silently leaves it frozen at first
+    creation (found during v1.2 live verification, see repository.py)."""
+    company = await _make_company(db_session)
+    repository = AgentFindingRepository(db_session)
+
+    await repository.upsert(
+        company_id=company.id,
+        agent_code="fundamental_analyst",
+        result_json={"summary": "first run"},
+        prompt_version="fundamental-v1",
+        model_used="gpt-4o-mini",
+        confidence_score=0.4,
+        evidence_sufficiency="partial",
+    )
+    first = await repository.get_latest(company.id, "fundamental_analyst")
+    assert first is not None
+    first_updated_at = first.updated_at
+    first_created_at = first.created_at
+
+    await repository.upsert(
+        company_id=company.id,
+        agent_code="fundamental_analyst",
+        result_json={"summary": "second run"},
+        prompt_version="fundamental-v1",
+        model_used="gpt-4o-mini",
+        confidence_score=0.7,
+        evidence_sufficiency="sufficient",
+    )
+    # `upsert` writes via a raw Core statement, which the ORM's identity map
+    # never observes -- without expiring, this second read would silently
+    # return the same stale, already-loaded Python object. Expire only
+    # `first` (not `expire_all`, which would also expire `company` and
+    # trip a MissingGreenlet on the plain `company.id` access below).
+    db_session.expire(first)
+    second = await repository.get_latest(company.id, "fundamental_analyst")
+    assert second is not None
+
+    assert second.updated_at > first_updated_at
+    assert second.created_at == first_created_at
+
+
+@pytest.mark.asyncio
 async def test_findings_are_scoped_per_agent_code(db_session):
     company = await _make_company(db_session)
     repository = AgentFindingRepository(db_session)

@@ -1,0 +1,30 @@
+# Every service's Dockerfile builds with context "." (see docker-compose.yml)
+# and COPYs its own subtree wholesale (`COPY frontend/ ./`, `COPY backend/ ./`).
+# Without this file, a host-side `.next` or `node_modules` (from local `npm run
+# dev`/`build`) or `.venv`/`__pycache__` (from local backend work) rides along
+# into the build context and can shadow what the image's own install step
+# produces -- the same class of "stale local artifacts leak into a fresh build"
+# problem documented in README's "Frontend Development Workflow" section.
+
+.git/
+.claude/
+
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+backend/.venv/
+backend/venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.egg-info/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.pytest_cache/
+
+node_modules/
+test-results/
+playwright-report/
+
+.env
+.env.local

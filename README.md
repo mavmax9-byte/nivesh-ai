@@ -33,6 +33,30 @@ npm install
 npm run dev
 ```
 
+#### Frontend development workflow
+
+`next dev` and `next build`/`next start` write incompatible artifacts into the
+same `frontend/.next` directory. Running a production build or `next start`
+locally (e.g. to sanity-check the standalone server) and then going back to
+`next dev` on top of that same `.next` folder can corrupt the dev cache --
+symptoms are things like pages rendering unstyled (compiled CSS 404s
+intermittently) or console errors like `Could not find module ... in the
+React Client Manifest` / `__webpack_modules__ is not a function`. This is a
+real incident this project hit, not a hypothetical.
+
+- **Normal day-to-day dev**: just `npm run dev`. `next.config.ts` only enables
+  `output: "standalone"` during the production build phase specifically so it
+  can't affect `next dev`.
+- **If you need to test a local production build** (`npm run build` /
+  `npm start`), do it in a separate pass, then run `npm run clean` before
+  switching back to `npm run dev`.
+- **If dev ever renders unstyled or throws bundler errors like the ones
+  above**, stop the dev server, run `npm run clean` (deletes `.next`), and
+  restart `npm run dev`.
+- Docker builds (`docker compose up --build`) are unaffected either way --
+  each service's Dockerfile builds in a clean container from a `.dockerignore`d
+  context, never reusing a host `.next`/`node_modules`.
+
 ## How to Run
 
 Run the full stack (Postgres, Redis, backend, Celery worker, frontend) with Docker Compose:
@@ -76,4 +100,5 @@ docs/        Pointer to the architecture and database design documentation
 | `cd backend && uv run pytest` | Run backend tests directly |
 | `cd backend && uv run ruff format .` | Format backend code |
 | `cd frontend && npm run build` | Production build of the frontend |
+| `cd frontend && npm run clean` | Remove `frontend/.next` (see Frontend development workflow above) |
 | `pre-commit install` | Enable pre-commit hooks (Ruff, mypy, basic hygiene checks) |

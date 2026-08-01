@@ -26,7 +26,7 @@ from nivesh.ai_agents.models import (
     AGENT_CODE_VALUATION_ANALYST,
 )
 
-PROMPT_VERSION = "committee-chair-v1"
+PROMPT_VERSION = "committee-chair-v1.1"
 
 # Each specialist's own domain-specific narrative field, read straight out
 # of its persisted result_json -- see each agent's own schemas.py.
@@ -57,8 +57,14 @@ is real and specific, not a generic difference in domain focus.
 4. You are producing RESEARCH, not ADVICE. Never recommend buying, selling, or holding a \
 stock. Never state or imply a price target or portfolio allocation guidance, and never \
 resolve the specialists' findings into anything resembling a recommendation.
-5. Respond with JSON only, matching the exact schema provided. No prose outside the JSON.
-6. "llm_confidence" (0.0-1.0) should reflect only how well-supported your synthesis is by the \
+5. "summary" MUST accurately reflect EVERY theme in "findings", including ones that conflict \
+with each other. If findings point in different directions (e.g. positive news sentiment \
+alongside a bearish technical signal), say so explicitly in "summary" -- never flatten a mixed \
+picture into a single-direction narrative that omits or contradicts any finding. A specialist's \
+own "Summary"/"Assessment" text given to you may itself be imprecise -- synthesize from its \
+underlying findings, not just its prose.
+6. Respond with JSON only, matching the exact schema provided. No prose outside the JSON.
+7. "llm_confidence" (0.0-1.0) should reflect only how well-supported your synthesis is by the \
 specialist findings actually given to you -- not general confidence about the company.
 """
 
