@@ -17,6 +17,7 @@ from nivesh.financials.router import router as financials_router
 from nivesh.knowledge_layer.router import router as knowledge_layer_router
 from nivesh.market_data.router import router as market_data_router
 from nivesh.news_intelligence.router import router as news_intelligence_router
+from nivesh.portfolio_planner.router import router as portfolio_planner_router
 from nivesh.portfolios.router import router as portfolios_router
 from nivesh.research.router import router as research_router
 from nivesh.retrieval_engine.router import router as retrieval_engine_router
@@ -35,6 +36,7 @@ api_v1_router.include_router(news_intelligence_router)
 api_v1_router.include_router(technical_intelligence_router)
 api_v1_router.include_router(knowledge_layer_router)
 api_v1_router.include_router(portfolios_router)
+api_v1_router.include_router(portfolio_planner_router)
 api_v1_router.include_router(research_router)
 api_v1_router.include_router(retrieval_engine_router)
 api_v1_router.include_router(ai_agents_router)

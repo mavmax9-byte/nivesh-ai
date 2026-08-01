@@ -61,6 +61,8 @@ from nivesh.market_data.service import MarketDataService
 from nivesh.news_intelligence.providers.factory import get_news_provider
 from nivesh.news_intelligence.repository import NewsArticleRepository
 from nivesh.news_intelligence.service import NewsIntelligenceService
+from nivesh.portfolio_planner.repository import PlannedPortfolioRepository
+from nivesh.portfolio_planner.service import PortfolioPlannerService
 from nivesh.research.repository import ResearchDossierRepository
 from nivesh.research.service import ResearchPipelineService
 from nivesh.retrieval_engine.repository import RetrievalRepository
@@ -798,4 +800,67 @@ def run_investment_committee(self, symbol: str) -> dict:
         raise
     except Exception as exc:
         logger.exception("run_investment_committee_failed", extra={"symbol": symbol})
+        raise self.retry(exc=exc) from exc
+
+
+async def _generate_planned_portfolio(portfolio_id: str) -> dict:
+    try:
+        async with AsyncSessionLocal() as session:
+            company_repository = CompanyRepository(session)
+            orchestrator = InvestmentCommitteeOrchestrator(
+                retrieval_service=RetrievalEngineService(
+                    embedding_provider=get_embedding_provider(),
+                    company_repository=company_repository,
+                    evidence_repository=RetrievalRepository(session),
+                ),
+                llm_provider=get_llm_provider(),
+                company_repository=company_repository,
+                statement_repository=FinancialStatementRepository(session),
+                dossier_repository=ResearchDossierRepository(session),
+                finding_repository=AgentFindingRepository(session),
+            )
+            service = PortfolioPlannerService(
+                session=session,
+                company_repository=company_repository,
+                statement_repository=FinancialStatementRepository(session),
+                finding_repository=AgentFindingRepository(session),
+                portfolio_repository=PlannedPortfolioRepository(session),
+                orchestrator=orchestrator,
+            )
+            await service.generate(uuid.UUID(portfolio_id))
+            return {"portfolio_id": portfolio_id}
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(
+    name="ingestion.generate_planned_portfolio",
+    bind=True,
+    max_retries=1,
+    default_retry_delay=60,
+)
+def generate_planned_portfolio(self, portfolio_id: str) -> dict:
+    """Runs the Portfolio Planner's generation workflow
+    (INVESTMENT_PLANNER_DESIGN.md §3) for one already-created
+    `PlannedPortfolio` row: universe selection, ensuring each candidate
+    has a fresh Investment Committee report (reusing
+    `InvestmentCommitteeOrchestrator` exactly as `run_investment_committee`
+    above does), deterministic ranking/allocation, and persistence.
+
+    Unlike every other task in this module, `PortfolioPlannerService.generate`
+    catches its own failures and marks the portfolio row `status="failed"`
+    with a user-facing `failure_reason` rather than raising -- a planner
+    run can legitimately fail for reasons a retry won't fix (an empty
+    eligible universe, every candidate rejected by Compliance), and the
+    frontend needs a terminal, explained state to show, not an infinite
+    retry loop. `max_retries=1` (not the usual 3) covers only genuine
+    transient failures (a dropped DB connection mid-run); the service's
+    own internal per-candidate handling already absorbs the transient
+    failures that matter most (one candidate's LLM call failing doesn't
+    fail the whole portfolio).
+    """
+    try:
+        return asyncio.run(_generate_planned_portfolio(portfolio_id))
+    except Exception as exc:
+        logger.exception("generate_planned_portfolio_failed", extra={"portfolio_id": portfolio_id})
         raise self.retry(exc=exc) from exc

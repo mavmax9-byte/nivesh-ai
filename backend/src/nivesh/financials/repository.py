@@ -63,6 +63,20 @@ class FinancialStatementRepository:
         )
         return result.scalar_one_or_none()
 
+    async def exists_for_company(self, company_id: uuid.UUID) -> bool:
+        """Added for portfolio_planner (INVESTMENT_PLANNER_DESIGN.md §4):
+        universe selection's cheap Tier 1 filter needs to know whether a
+        candidate has *any* financial statement at all -- the same
+        condition Fundamental Analyst's own quorum requirement depends
+        on -- without paying for a full committee run just to find out a
+        candidate would fail quorum anyway."""
+        result = await self._session.execute(
+            select(FinancialStatement.id)
+            .where(FinancialStatement.company_id == company_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def get_latest_statement(
         self, company_id: uuid.UUID, period_type: str, fiscal_year: int, fiscal_period: str
     ) -> FinancialStatement | None:

@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   TriangleAlert,
   Users,
+  Wallet,
 } from "lucide-react";
 
 import { buttonVariants } from "@/components/ui/button";
@@ -61,7 +62,11 @@ export default function LandingPage() {
           every claim traces back to real evidence.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-3">
-          <Link href="/companies" className={cn(buttonVariants({ size: "lg" }))}>
+          <Link href="/planner" className={cn(buttonVariants({ size: "lg" }))}>
+            <Wallet size={16} className="mr-1.5" />
+            Build my portfolio
+          </Link>
+          <Link href="/companies" className={cn(buttonVariants({ variant: "outline", size: "lg" }))}>
             <Search size={16} className="mr-1.5" />
             Search a company
           </Link>

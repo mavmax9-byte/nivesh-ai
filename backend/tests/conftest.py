@@ -21,6 +21,7 @@ from nivesh.knowledge_layer import models as _knowledge_layer_models  # noqa: F4
 from nivesh.main import create_app
 from nivesh.market_data import models as _market_data_models  # noqa: F401
 from nivesh.news_intelligence import models as _news_intelligence_models  # noqa: F401
+from nivesh.portfolio_planner import models as _portfolio_planner_models  # noqa: F401
 from nivesh.portfolios import models as _portfolios_models  # noqa: F401
 from nivesh.research import models as _research_models  # noqa: F401
 from nivesh.technical_intelligence import models as _technical_intelligence_models  # noqa: F401

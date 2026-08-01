@@ -5,7 +5,9 @@ conversation (or a new human engineer) should be able to read this file and
 continue development with zero loss of context. Written as an onboarding
 document for a Senior Staff Engineer joining the project.
 
-Last updated: after v1.2 (Live Production Verification), released as `v1.0.0-alpha`.
+Last updated: after v1.3 (AI Investment Planner -- the user's own request
+labeled this "Version 1.1", a product-layer label distinct from this
+document's internal v0.x/v1.x numbering; see INVESTMENT_PLANNER_DESIGN.md).
 
 ---
 
@@ -153,6 +155,8 @@ nivesh-ai/
 │   │   ├── retrieval_engine/    # v0.8: Retrieval Engine (hybrid evidence retrieval)
 │   │   ├── ai_agents/           # v0.9 Fundamental Analyst + v1.0 Investment Committee:
 │   │   │                        # 5 specialists, Chair, Compliance, real orchestrator
+│   │   ├── portfolio_planner/   # v1.3: AI Investment Planner -- a product layer over
+│   │   │                        # ai_agents, zero new LLM calls of its own (§3a below)
 │   │   └── ingestion/tasks.py   # every Celery task, one shared file
 │   └── tests/                   # mirrors src/ 1:1 by domain, plus conftest.py
 │
@@ -226,6 +230,28 @@ non-obvious conventions worth knowing before touching this code:
   pinned there to silence Next's dual-lockfile warning -- the root
   `package-lock.json` (Playwright's e2e deps) and `frontend/package-lock.json`
   (the Next app's own deps) are both intentional, not a cleanup target.
+
+**v1.3 (AI Investment Planner) added two new frontend pages** --
+`app/planner/page.tsx` (capital/risk-profile/horizon input) and
+`app/planner/[id]/page.tsx` (generating/ready/failed/review, the same
+"one page, several conditional states" shape `companies/[symbol]/page.tsx`
+already established) -- plus one new component,
+`components/planner/HoldingCard.tsx`, and a new API layer file,
+`lib/api/planner.ts`, mirroring `lib/api/reports.ts`'s shape exactly
+(`create.../get.../poll...` with the same "404 -> null" convention). Zero
+new design-system primitives were added -- every visual element
+(`Badge`, `ConfidenceMeter`, `EvidenceSufficiencyBadge`, `PageHeader`,
+`Card`, `Alert`) is reused unchanged from v1.1. Two real bugs were found
+via live browser verification specifically (not caught by typecheck,
+lint, or unit tests): a `<input min={1}>` HTML attribute silently
+blocked the custom validation message from ever rendering (native
+constraint validation runs before React's `onSubmit`); and a
+`useAsync(fn, checked ? [a, b] : [])` call passed a *variable-length*
+dependency array, which is invalid per React's Rules of Hooks (this
+project's convention, going forward: a hook's dependency array must
+always have the exact same length across every render of a given
+component instance -- gate the *body* of the fetcher/effect on a
+condition, never the deps array's own shape).
 
 Every domain module that ingests external data (`market_data`, `financials`,
 `corporate_filings`, `document_intelligence`, `news_intelligence`,
@@ -1149,7 +1175,7 @@ pass, not during design or code review — see §5/§14.
 
 ---
 
-## 11. Completed Versions (v0.1 – v1.2)
+## 11. Completed Versions (v0.1 – v1.3)
 
 | Version | Delivered | Key modules/tables |
 |---|---|---|
@@ -1172,10 +1198,13 @@ pass, not during design or code review — see §5/§14.
 | **v1.1 — MVP Frontend** | The first real frontend -- replaces every placeholder page (`page.tsx` dashboard stub, empty `portfolio/`/`stocks/`/`watchlist/`) with a working Next.js 15 App Router UI consuming the real backend, zero mock data anywhere, per an explicit user spec ("no new backend capabilities... make Nivesh AI demo-ready"). Eight screens: landing, company search, company hub (unifies generate/in-progress/ready states off one `usePolling(pollCommitteeProgress)` call), Final Research Report, Specialist Findings (grid + detail), Evidence & Citations, plus the pre-existing placeholder Portfolio/Watchlist pages left as-is (explicitly out of scope -- blocked on real auth, §12 item 6). New API layer (`lib/api/`) TS-mirrors every backend Pydantic schema this UI touches (`types.ts`) -- a deliberate "compile error over silent mismatch" choice -- plus two purpose-built hooks (`useAsync`, `usePolling`) chosen over adding a data-fetching library. New design-system layer: full light/dark HSL token set in `globals.css` (`--success`/`--warning`/`--destructive` + `-bg` variants), `tailwind.config.ts` extended to match, `cva`-based `Badge`/`Button`/`Alert` variants. One real bug found during the mandated live-backend verification pass (not by design review): Pydantic serializes `Decimal` fields as JSON **strings**, not numbers -- `latest_price` was rendering as `"₹2398.0000"` (no grouping) because the TS type said `number \| null`; fixed by correcting the type to `string \| null` and having `CompanyProfileCard.tsx`'s `formatPrice` `Number()`-parse before formatting. A self-driven "senior product designer" review pass followed implementation (per the spec's own instruction) and caught two real UX misses before shipping: a duplicate page-title hierarchy (fixed by keeping one real `<h2>` per section instead of removing it entirely -- an over-correction the Playwright suite itself caught and forced a second, better fix) and a missing mobile nav (added `MobileNav.tsx`). 9 new/updated Playwright e2e specs, tuned to run serially (`fullyParallel: false`) after concurrent first-hits against Next's dev-mode cold-compile produced false timeouts under the default parallel config -- a test-infra tuning fix, not an app bug. **Not live-verified against the real OpenAI API** -- the same carried-forward gap since v0.7, resolved for real in v1.2 below. | *(none -- pure frontend, zero backend/schema changes)* |
 | **v1.2 — Live Production Verification** | The first version run end-to-end against the **real** OpenAI API (a real `OPENAI_API_KEY` was finally supplied) -- closes the "not live-verified against the real API" gap every version since v0.7 had carried forward and explicitly flagged as its most significant unverified surface. Real embeddings (`text-embedding-3-small`, 37 embeddings across 4 source types for TCS), real semantic retrieval (confirmed live: genuine cosine-similarity hits, correct cross-leg dedup merging `["semantic","structured"]`), and a real, fully-populated five-specialist Investment Committee run were generated and every output manually inspected end-to-end, cross-checked line-by-line against the real Postgres data behind it (financial statements, technical indicators, news articles) -- not just schema-validated. **Real, user-facing bugs found and fixed, all confirmed via live re-generation after each fix** (see §13 point 1e and §14 for the full list, and ai_agents/repository.py's/each prompts.py's own inline comments for the fix itself): (1) `updated_at` silently frozen on every re-run across three upsert repositories (`ai_agents`, `knowledge_layer`, `technical_intelligence`) -- a raw Core `on_conflict_do_update` statement never triggers the ORM's `onupdate=func.now()` hook, so it must be set explicitly in the `SET` clause; (2) the Technical Analyst hallucinated a price-vs-indicator relationship ("price is above the 20-day EMA") despite never being given a price figure -- its evidence is indicator-values-only, and nothing in its prompt said so; (3) News & Sentiment (and, once triggered, Valuation too) crashed outright when the LLM omitted the shared `SpecialistAssessment.metric` field, since nothing in either prompt explained what "metric" should contain for a news item or a valuation line; (4) findings could cite only one of several evidence items they actually drew from (caught live: a real finding blended two separate ABB news articles, citing only one) -- the citation rule across all five specialist prompts now requires citing every index a claim draws from, not just one; (5) the Committee Chair's synthesis truncated mid-response into unparseable JSON once a real five-specialist run gave it enough material to synthesize -- `LLM_MAX_OUTPUT_TOKENS` raised 2000 → 4000; (6) a specialist's own `summary`/domain-narrative field (`technical_read`, `valuation_assessment`, etc.) could flatly contradict its own `findings` array on a mixed-stance result (observed live: Technical's `summary` claimed "bullish trend" while its own findings correctly showed a bearish EMA crossover) -- every specialist prompt (plus the Chair's, since it receives each specialist's raw `summary` as input) now explicitly requires the narrative fields to reflect every finding, including conflicting ones, rather than flattening to one direction. All six fixes were prompt-level or a single shared config constant, not a schema/architecture change, and all were re-verified with a fresh live run after fixing (the final clean run: 5/5 specialists succeeded, a genuine cross-specialist disagreement correctly surfaced -- Technical's bearish crossover vs. News Sentiment's positive revenue-beat reaction -- Compliance approved, zero further errors). Regression tests added for the `updated_at` fix (one per affected repository, asserting a second upsert actually advances the timestamp) surfaced a second, adjacent bug in the tests themselves: `upsert`'s raw Core write is invisible to the ORM's identity map, so a same-session read-after-a-second-write returned a stale cached object -- fixed in the tests via a targeted `session.expire(obj)`, and flagged as a caution comment on each affected repository method for any future caller that might hit the same trap. All 588 backend tests (585 + 3 new) pass against real Postgres+pgvector; Ruff/mypy clean; all 9 Playwright e2e specs pass against the live stack with real (non-stubbed) committee output. See §17 for the full production-readiness classification. | *(none -- prompt/config fixes only, zero schema changes)* |
 
-**Test count as of v1.2: 588 passing** (`pytest`, real Postgres with the
-`vector` extension installed). Ruff and mypy both clean across the whole
-`src/` tree (193 source files). All 9 Playwright e2e specs pass against a
-live backend with real (non-stubbed) LLM-generated content.
+| **v1.3 — AI Investment Planner** | A new *product* layer on top of the unchanged Investment Committee, per a design-first request the user explicitly labeled "Version 1.1" (a product-facing label, not this document's internal numbering) -- design produced and confirmed first (`INVESTMENT_PLANNER_DESIGN.md`, mirroring the `FUNDAMENTAL_ANALYST_DESIGN.md`/`INVESTMENT_COMMITTEE_DESIGN.md` precedent), then implemented exactly as designed, with an explicit "reuse existing modules, no new AI agents/databases/ingestion pipelines unless there is no viable alternative" constraint -- none were needed. Answers "I have ₹X, where should I invest and why?" for a retail (not analyst) user: capital + risk profile (conservative/balanced/growth) + horizon + optional sector exclusions in, an illustrative, evidence-cited allocation out. **The core design principle, carried through every layer of the implementation**: this is a deterministic aggregation/ranking/allocation pass over already-guardrailed Investment Committee output -- it makes zero new LLM calls of its own, reusing `InvestmentCommitteeOrchestrator` unchanged (the exact class `ingestion/tasks.py`'s own `run_investment_committee` uses) to backfill any candidate missing a report. New backend module `portfolio_planner/` (models/schemas/repository/service/router, the same shape every domain module follows) owns two new tables (`planned_portfolios`, `planned_portfolio_holdings`, migration `0010`) -- deliberately **not** a reuse of the existing `portfolios`/`holdings` tables, which represent a user's real, owned holdings behind placeholder auth; a planned portfolio is an AI-generated proposal, conceptually distinct, and per the design's own decision needs no auth at all this version. Universe selection is a two-tier funnel (§4 of the design doc): a free Tier 1 filter (active, sector-permitted, has a financial statement -- mirrors Fundamental Analyst's own quorum requirement, added as one new additive method, `FinancialStatementRepository.exists_for_company`) followed by a capped Tier 2 shortlist, before any expensive Tier 3 committee generation -- since generating a report costs 5-6 real LLM calls and screening the whole company table that way isn't viable. Ranking is a weighted composite (confidence score, evidence sufficiency, specialist stance tally, disagreement count) with risk-profile-dependent weights; allocation is score-weighted within per-position and per-sector caps, explicitly designed and tested to leave an honest unallocated residual rather than force 100% deployment past a cap -- the only real candidate pool in this sandbox is exactly one company, so this degenerate case is the one live-exercised, not a theoretical edge. Explanations are templated compressions of each committee's own `summary`/citations, not new LLM reasoning. Rebalancing is a deliberate, honestly-labeled v1.1-scope placeholder (`GET .../rebalance` always returns `{available: false, message: "..."}`), not a stub bug -- real drift/time/evidence-change triggers need portfolios accumulating history this version doesn't have yet. **A real, subtle bug was caught and fixed via the same `get_latest`-before-a-write identity-map trap v1.2 first found**: this service reads a candidate's committee report to check freshness *before* possibly regenerating it, so `_ensure_fresh_report` calls `session.expire_all()` before invoking the orchestrator -- otherwise not just this service's own later read, but the orchestrator's *own internal* post-upsert read inside `_link_to_research_dossier`, would silently return a stale cached object. **Two more real bugs were found via live browser verification, not static analysis**: a client-side capital-validation message never actually rendered, because the `<input min={1}>` HTML attribute triggered native browser constraint validation before React's own `onSubmit` handler ever ran (fixed by removing the redundant native constraint and trusting the existing, better-explained JS validation as the single source of truth); and the Portfolio Review page's "check for rebalancing" lazy-fetch button passed a *variable-length* dependency array to `useAsync` (`checked ? [id, checked] : []`), which both violates React's Rules of Hooks and, separately, didn't actually gate anything (deps only control re-fetching, not the initial mount fetch) -- fixed by keeping a constant-length deps array and gating the real network call inside the fetcher itself. Frontend reuses the entire existing design system (`Badge`, `ConfidenceMeter`, `EvidenceSufficiencyBadge`, `PageHeader`, `Card`, `Alert`, `Button`) and the `useAsync`/`usePolling` hooks unchanged -- two new pages (`/planner` input screen, `/planner/[id]` generating/ready/failed/review screen) and one new component (`HoldingCard`). Verified against the real pipeline end-to-end: a real committee-backed allocation generated and rendered correctly (real ₹ amounts, real citations, real caveats), the risk-profile fallback path live-exercised (Conservative correctly excluded TCS's own genuinely-insufficient-evidence Risk Analyst finding, then fell back to showing it anyway with an honest caveat, exactly as designed), and the empty-universe failure path live-exercised (excluding TCS's only sector correctly produces a clear, non-crashing failure state). 28 new backend tests (repository, service, API) plus 6 new Playwright e2e specs, all passing; all 9 pre-existing e2e specs still pass unchanged (no regression to any v1.0/v1.1/v1.2 functionality). | `planned_portfolios`, `planned_portfolio_holdings` |
+
+**Test count as of v1.3: 616 backend tests passing** (588 + 28 new,
+`pytest`, real Postgres with the `vector` extension installed). Ruff and
+mypy both clean across the whole `src/` tree (199 source files). All 15
+Playwright e2e specs pass (9 pre-existing + 6 new) against a live backend
+with real (non-stubbed) LLM-generated content.
 
 Commits (chronological, all on `main`):
 `6d5e038` init → `9c8ff36` gitignore → `f616f25` Sprint 4 → `fe5a0e4` ruff
@@ -1184,18 +1213,35 @@ fixes → `d308b17` mypy fixes → `53b1e66` feat(v0.3) corporate filings →
 intelligence → `084870c` feat(v0.6) technical intelligence → `9b0b621`
 feat(v0.7) knowledge layer → `1f8f4ac` feat(v0.8) retrieval engine →
 `989dd64` feat(v0.9) fundamental analyst → `9d906c1` feat(v1.0) investment
-committee → `d569d8b` feat(v1.1) MVP frontend →
-(v1.2 live production verification, see git log for the current hash).
+committee → `d569d8b` feat(v1.1) MVP frontend → `cecea3b` feat(v1.2) live
+production verification →
+(v1.3 AI Investment Planner, see git log for the current hash).
 
 ---
 
-## 12. Current Roadmap (v1.3 onwards)
+## 12. Current Roadmap (v1.4 onwards)
 
-Nothing beyond v1.2 has been scoped or approved yet. Do not start
-implementing v1.3 without an explicit spec from the user — this project's
-working pattern has consistently been: architecture review first (no code)
-→ user confirms scope → implement → self-review → verify → commit/push.
-See §17 for the current production-readiness state and v1.3 spec status.
+Nothing beyond v1.3 (AI Investment Planner) has been scoped or approved
+yet. Do not start implementing v1.4 without an explicit spec from the
+user — this project's working pattern has consistently been:
+architecture review first (no code) → user confirms scope → implement →
+self-review → verify → commit/push. See §17 for the current
+production-readiness state.
+
+v1.3 added its own natural next steps, layered on top of the list below
+(roughly in dependency order, nearest-first): (a) a real rebalancing
+engine behind the `GET /planner/portfolios/{id}/rebalance` placeholder
+(needs a trigger design — drift threshold? re-run on demand? scheduled?
+— and a decision on whether it re-invokes the Committee or just
+re-scores against already-fresh reports); (b) empirical tuning of the
+planner's ranking weights and position/sector caps (`_PROFILE_WEIGHTS`,
+`_MAX_POSITION_WEIGHT`, `_MAX_SECTOR_WEIGHT` in
+`portfolio_planner/service.py`), currently reasoned defaults never
+validated against real multi-candidate universes because this sandbox's
+seed data only supports a single real candidate (TCS) today; (c) result
+caching for the universe-selection LLM shortlist step, extending the
+same pre-existing `ai_agents` caching gap (item 12 below) that v1.3's
+own two-tier funnel was designed around rather than solved.
 
 **What v0.4 through v1.2 were explicitly building toward**: document
 extractions, news articles, technical indicators, a semantic retrieval
@@ -1474,6 +1520,31 @@ deliberate conversation with the user first)
     for a raw Core statement (found live, §14). Changing any of these
     needs a fresh explicit conversation with the user first, the same as
     1a/1b/1c/1d.
+1f. **v1.3's core design principle is frozen: the AI Investment Planner
+    makes zero new LLM calls of its own.** `portfolio_planner/service.py`
+    is a deterministic aggregation/ranking/allocation layer over
+    already-guardrailed `ai_agents` output — it reuses
+    `InvestmentCommitteeOrchestrator` unchanged to *produce* evidence
+    (only when a candidate's existing report is stale or missing, see
+    `_ensure_fresh_report`), and every ranking/allocation/explanation
+    step downstream of that is plain arithmetic and template
+    substitution, never a fresh model call. This was the explicit
+    resolution to the "research only, never advice" vs. "investment
+    planning product" tension raised during v1.3's design phase
+    (`INVESTMENT_PLANNER_DESIGN.md` §0) — introducing a new LLM call
+    site here (e.g. an "explain this allocation" generation step) would
+    reopen that regulatory question and needs a fresh explicit
+    conversation with the user first, not a quiet addition. Relatedly:
+    `planned_portfolios`/`planned_portfolio_holdings` are deliberately
+    **not** a reuse of the pre-existing `portfolios`/`holdings` tables
+    (those model real owned positions behind a future real-auth
+    boundary; these model an anonymous, disposable AI-generated
+    proposal) — do not collapse the two without an explicit auth design
+    decision (§12 item 6) first. The `_session.expire_all()`-before-
+    `_orchestrator.run()` call in `_ensure_fresh_report` is the same
+    identity-map fix frozen at 1e above, reapplied here because this is
+    a second call site with the identical read-then-possibly-rewrite-
+    then-read shape.
 2. **One shared `Base`, one Postgres database.** Never introduce a second
    declarative base or a second database/schema without explicit sign-off.
 3. **The provider/factory/DTO abstraction is not optional.** Business
@@ -1863,6 +1934,35 @@ appended at the end of this section for what remains genuinely open.
   still surface prompt-adherence failures this pass didn't have the
   evidence shape to exercise — not a known bug, just an honest bound on
   what "live-verified" means here.
+- **Rebalancing is a real, honest placeholder as of v1.3** —
+  `GET /planner/portfolios/{id}/rebalance` always returns
+  `available: false` with an explanatory message; no drift detection, no
+  triggers, no re-allocation logic exists. This is the exact scope
+  `INVESTMENT_PLANNER_DESIGN.md` §10 called for, not an oversight. See
+  §12 item (a) for what a real implementation would need to decide.
+- **The planner's ranking weights and allocation caps
+  (`_PROFILE_WEIGHTS`, `_MAX_POSITION_WEIGHT`, `_MAX_SECTOR_WEIGHT` in
+  `portfolio_planner/service.py`) are reasoned starting defaults, not
+  empirically tuned.** Same "don't build ahead of real usage" posture as
+  `retrieval_engine`'s scoring formula (§12 item 12) and the specialist
+  guardrail options above — revisit once real multi-candidate portfolios
+  exist to tune against.
+- **v1.3's live verification only ever exercised a single-candidate
+  universe** (this sandbox's seed data has exactly one company, TCS,
+  with sufficient evidence to clear the planner's Tier 1 filter). The
+  single-candidate cap/residual behavior (§11's v1.3 entry) was
+  confirmed correct for that case across all three risk profiles, and
+  the empty-universe failure path was also confirmed live, but genuine
+  multi-candidate ranking, sector-cap redistribution across more than
+  one sector, and the Tier 2 LLM-shortlist step have never run against
+  real data with more than one eligible candidate — only unit-tested
+  with mocks. Not a known bug, an honest bound on what "live-verified"
+  means for this version, mirroring the TCS-only caveat above.
+- **The universe-selection Tier 2 LLM shortlist step makes no attempt
+  at caching or reuse across separate planner runs** — every
+  `POST /planner/portfolios` call that needs to shortlist candidates
+  re-runs it from scratch, the same pre-existing `ai_agents` cost gap
+  §12 item 12/(c) already documents, now with a second call site.
 
 ---
 
@@ -2068,17 +2168,63 @@ Celery task exists for this module (§9)
   own (it reviews the Chair's synthesized text, not raw evidence), so
   its verdict is only ever visible via `GET /reports/{symbol}`.
 
+- **portfolio_planner** (`/planner`) — added v1.3 (AI Investment Planner).
+  - `POST /planner/portfolios` — body is `PlannerRequest`
+    (`capital: float > 0`, `risk_profile: "conservative"|"balanced"|"growth"`,
+    `horizon: "short"|"medium"|"long"`, `sector_exclusions: string[]`).
+    Creates a `planned_portfolios` row with `status="generating"`, enqueues
+    `generate_planned_portfolio.delay(...)`, returns `202` with
+    `PlannedPortfolioJobStatus` (`{id, status: "generating"}`).
+  - `GET /planner/portfolios/{portfolio_id}` — always `200` while the id
+    exists (never `404` while `generating`, unlike the `ai_agents`/
+    `reports` endpoints above) since the id is returned at creation time
+    and the frontend polls this same URL through every state; `404` only
+    if the id was never created. Returns `PlannedPortfolioRead`
+    (`status`, `summary`, `caveats`, `unallocated_amount`,
+    `confidence_score`, `universe_size`, `failure_reason`, `holdings[]`).
+  - `GET /planner/portfolios/{portfolio_id}/rebalance` — `404` if the
+    portfolio id doesn't exist, otherwise always `200` with a placeholder
+    `RebalanceRead` (`available: false` + an explanatory message). v1.3
+    scope is placeholder-only; see §14.
+
 ---
 
-## 17. Production Readiness (v1.2 / release `v1.0.0-alpha`) and Version 1.3+ Status
+## 17. Production Readiness (v1.2 / release `v1.0.0-alpha`, v1.3 AI
+Investment Planner) and Version 1.4+ Status
 
-**Version 1.1 (MVP Frontend) and Version 1.2 (Live Production
-Verification) are both complete** — see §11's entries for full delivered
-scope. **No Version 1.3 specification has been given by the user as of
-this document's last update.** Do not infer one and do not start
-implementing anything under a "v1.3" label without first getting an
-explicit, detailed spec, the same rhythm every version through v1.2
-followed (§15 point 3).
+**Version 1.1 (MVP Frontend), Version 1.2 (Live Production
+Verification), and Version 1.3 (AI Investment Planner — the user's own
+request labeled this "Version 1.1", a distinct product-facing label; see
+the top-of-document note) are all complete** — see §11's entries for
+full delivered scope. **No Version 1.4 specification has been given by
+the user as of this document's last update.** Do not infer one and do
+not start implementing anything under a "v1.4" label without first
+getting an explicit, detailed spec, the same rhythm every version
+through v1.3 followed (§15 point 3).
+
+**v1.3 production-readiness summary** (design-first, then implemented
+exactly as designed per explicit user instruction; full detail in the
+v1.3 production review delivered to the user): reused
+`InvestmentCommitteeOrchestrator` and the retrieval engine unchanged,
+made zero new LLM calls of its own (§13 point 1f), added two new tables
+and one new backend module plus two new frontend pages, and was
+live-verified end-to-end against the real pipeline (real allocation
+generated and rendered correctly across all three risk profiles against
+this sandbox's single real candidate, the empty-universe failure path
+live-exercised, 28 new backend tests + 6 new Playwright specs passing,
+zero regressions across the 588 pre-existing backend tests or the 9
+pre-existing e2e specs). Two real bugs were found via live browser
+verification (not by any automated test) and fixed: a native HTML5
+`min` attribute silently blocking the planner form's custom client-side
+validation, and a React Rules-of-Hooks violation (variable-length
+`useAsync` deps array) in `RebalanceSection` that also caused an
+unconditional eager network call. No Critical or High issues were found
+open at review time. The honest, disclosed scope limits are §14's new
+v1.3 items: rebalancing is a placeholder only, ranking weights/caps are
+untuned defaults, and live verification only ever exercised a
+single-candidate universe (this sandbox's seed data supports exactly
+one real candidate, TCS) — genuine multi-candidate ranking and
+sector-cap redistribution remain unit-tested-only, not live-verified.
 
 **Production-readiness classification (v1.2's own live-verification
 pass, full detail delivered to the user as a production review; summary
@@ -2115,15 +2261,17 @@ news provider, real authentication, portfolio analytics, raw document
 storage, a pgvector ANN index, revisiting `retrieval_engine`'s scoring
 formula now that real committee runs exist to tune against, a numeric
 cross-check for every specialist, findings caching, concurrent specialist
-execution, widening Compliance's deterministic filter — plus, new from
-v1.2: closing the CI Postgres-service gap, and structurally hardening the
-`metric`/summary-consistency mitigations (§14) rather than relying on
-prompt wording alone. These are **candidates the user has not yet chosen
+execution, widening Compliance's deterministic filter, closing the CI
+Postgres-service gap, structurally hardening the `metric`/summary-
+consistency mitigations (§14) rather than relying on prompt wording
+alone — plus, new from v1.3: a real rebalancing engine, empirical
+tuning of the planner's ranking weights/caps, and universe-selection
+result caching. These are **candidates the user has not yet chosen
 from or approved**, not a queued backlog. When a new conversation picks
 this up, the first step is asking the user which of these (or something
-else entirely) Version 1.3 should be.
+else entirely) Version 1.4 should be.
 
-If Version 1.3 turns out to be Macro Economy or Portfolio Analyst: both
+If Version 1.4 turns out to be Macro Economy or Portfolio Analyst: both
 were explicitly scoped *out* of v1.0 for real, substantive reasons (no
 macro data source exists anywhere in this codebase; Portfolio needs a
 fundamentally different, portfolio/user-level `AgentContext` shape and
@@ -2131,7 +2279,7 @@ is blocked on real auth) — see §12 item 1 and
 `INVESTMENT_COMMITTEE_DESIGN.md` §1. Neither is a simple "copy the
 Technical Analyst template" exercise; each needs its own real spec.
 
-If Version 1.3 touches the Investment Committee itself (Compliance
+If Version 1.4 touches the Investment Committee itself (Compliance
 widening, concurrency, evidence-query tuning, confidence weighting, the
 `metric`/summary structural hardening above): read
 `INVESTMENT_COMMITTEE_DESIGN.md` in full first, then §13 points 1d and 1e
@@ -2141,7 +2289,15 @@ Compliance, Fundamental-must-succeed quorum, no P/B, the specific
 defaults to casually revisit without the same explicit conversation that
 set them.
 
-If Version 1.3 is another new specialist agent style module elsewhere in
+If Version 1.4 touches the AI Investment Planner itself (a real
+rebalancing engine, ranking/allocation tuning, universe-selection
+caching): read `INVESTMENT_PLANNER_DESIGN.md` in full first, then §13
+point 1f carefully — the "zero new LLM calls" principle and the
+deliberate non-reuse of `portfolios`/`holdings` are frozen, not defaults
+to casually revisit without the same explicit conversation that set
+them.
+
+If Version 1.4 is another new specialist agent style module elsewhere in
 this codebase: `ai_agents/agents/technical/` (or any of the other four)
 is now as valid a template to copy as `fundamental/` was — read whichever
 is closest in evidence shape to the new domain, and read §13 points 1,

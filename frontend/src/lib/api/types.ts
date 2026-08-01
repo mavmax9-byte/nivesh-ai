@@ -371,3 +371,90 @@ export function specialistAssessments(
   }
   return result.findings;
 }
+
+// ---------------------------------------------------------------------
+// Portfolio Planner (INVESTMENT_PLANNER_DESIGN.md) -- mirrors
+// backend/src/nivesh/portfolio_planner/schemas.py 1:1, the same
+// "compile error over silent mismatch" discipline every other type in
+// this file follows.
+// ---------------------------------------------------------------------
+
+export type RiskProfile = "conservative" | "balanced" | "growth";
+export type Horizon = "short" | "medium" | "long";
+export type PlannerPortfolioStatus = "generating" | "ready" | "failed";
+
+export interface PlannerRequest {
+  capital: number;
+  risk_profile: RiskProfile;
+  horizon: Horizon;
+  sector_exclusions?: string[];
+}
+
+export interface PlannedPortfolioJobStatus {
+  id: string;
+  status: PlannerPortfolioStatus;
+}
+
+export interface PlannedHolding {
+  company_id: string;
+  symbol: string;
+  company_name: string;
+  sector: string | null;
+  allocated_amount: number;
+  allocated_weight: number;
+  rank_score: number;
+  confidence_score: number;
+  evidence_sufficiency: EvidenceSufficiency;
+  thesis: string;
+  weight_rationale: string;
+  top_citation_title: string | null;
+  top_citation_source_type: string | null;
+}
+
+export interface PlannedPortfolio {
+  id: string;
+  capital: number;
+  risk_profile: RiskProfile;
+  horizon: Horizon;
+  sector_exclusions: string[];
+  status: PlannerPortfolioStatus;
+  summary: string | null;
+  caveats: string[];
+  unallocated_amount: number | null;
+  confidence_score: number | null;
+  evidence_sufficiency: EvidenceSufficiency | null;
+  universe_size: number | null;
+  failure_reason: string | null;
+  holdings: PlannedHolding[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RebalanceSuggestion {
+  available: boolean;
+  message: string;
+}
+
+export const RISK_PROFILES: { value: RiskProfile; label: string; description: string }[] = [
+  {
+    value: "conservative",
+    label: "Conservative",
+    description: "Favors well-evidenced, lower-volatility holdings and diversifies more tightly.",
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    description: "An even mix of stability and growth, weighted toward higher-confidence research.",
+  },
+  {
+    value: "growth",
+    label: "Growth",
+    description: "Willing to concentrate more in higher-momentum names for higher upside.",
+  },
+];
+
+export const HORIZONS: { value: Horizon; label: string }[] = [
+  { value: "short", label: "Short-term (under 1 year)" },
+  { value: "medium", label: "Medium-term (1–3 years)" },
+  { value: "long", label: "Long-term (3+ years)" },
+];
